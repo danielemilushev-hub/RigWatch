@@ -127,6 +127,15 @@ class D3DKMT_CLOSEADAPTER(ctypes.Structure):
     _fields_ = [("hAdapter", ctypes.c_uint32)]
 
 
+class D3DKMT_ADAPTERADDRESS(ctypes.Structure):
+    _fields_ = [("BusNumber", ctypes.c_uint32),
+                ("DeviceNumber", ctypes.c_uint32),
+                ("FunctionNumber", ctypes.c_uint32)]
+
+
+KMTQAITYPE_ADAPTERADDRESS = 6
+
+
 def _adapters_via_d3dkmt(diag):
     """Names + total VRAM + LUIDs straight from the WDDM kernel thunk."""
     out = []
@@ -176,13 +185,24 @@ def _adapters_via_d3dkmt(diag):
             except Exception:
                 pass
 
+            pci = None
+            addr = D3DKMT_ADAPTERADDRESS()
+            q3 = D3DKMT_QUERYADAPTERINFO(
+                info.hAdapter, KMTQAITYPE_ADAPTERADDRESS,
+                ctypes.cast(ctypes.byref(addr), ctypes.c_void_p),
+                ctypes.sizeof(addr))
+            if gdi.D3DKMTQueryAdapterInfo(ctypes.byref(q3)) == 0:
+                if addr.BusNumber != 0xFFFFFFFF:
+                    pci = (int(addr.BusNumber), int(addr.DeviceNumber),
+                           int(addr.FunctionNumber))
+
             key = luid_key(info.AdapterLuid.HighPart, info.AdapterLuid.LowPart)
             if not name:
                 # Render-only / virtual adapters have no registry entry.
                 diag.append("d3dkmt: skipped unnamed adapter luid=%s" % key)
                 continue
             out.append({"name": name, "vendor": _vendor_of(name),
-                        "total_vram": vram, "keys": {key}})
+                        "total_vram": vram, "keys": {key}, "pci": pci})
         diag.append("d3dkmt: %d adapter(s)" % len(out))
     except Exception as exc:
         diag.append("d3dkmt: %r" % (exc,))
@@ -268,7 +288,7 @@ def _adapters_via_dxgi(diag):
                             out.append({
                                 "name": name, "vendor": _vendor_of(name),
                                 "total_vram": int(desc.DedicatedVideoMemory),
-                                "keys": {luid_key(hi, lo)},
+                                "keys": {luid_key(hi, lo)}, "pci": None,
                             })
                 finally:
                     _com_call(adapter, 2, ctypes.c_ulong, [])
@@ -408,31 +428,62 @@ def parse_energy_meter(items):
 # Board power (TBP) and rough idle draw per card, matched by name substring.
 # Longest match wins. Anything unknown falls back to DEFAULT_GPU_POWER.
 GPU_POWER_TABLE = {
-    "7900 XTX": (355, 22), "7900 XT": (315, 20), "7800 XT": (263, 16),
-    "7700 XT": (245, 15), "7600 XT": (190, 12), "7600": (165, 11),
+    # AMD
+    "9070 XT": (304, 18), "9070": (220, 15),
+    "7900 XTX": (355, 22), "7900 XT": (315, 20), "7900 GRE": (260, 17),
+    "7800 XT": (263, 16), "7700 XT": (245, 15), "7600 XT": (190, 12),
+    "7600": (165, 11),
     "6950 XT": (335, 20), "6900 XT": (300, 18), "6800 XT": (300, 18),
     "6800": (250, 16), "6750 XT": (250, 15), "6700 XT": (230, 13),
-    "6650 XT": (176, 11), "6600 XT": (160, 10), "6600": (132, 9),
-    "6500 XT": (107, 7), "5700 XT": (225, 13), "5700": (180, 11),
-    "4090": (450, 22), "4080": (320, 20), "4070 Ti": (285, 16),
-    "4070": (200, 14), "4060 Ti": (160, 12), "4060": (115, 10),
-    "3090": (350, 25), "3080": (320, 22), "3070": (220, 16),
-    "3060 Ti": (200, 14), "3060": (170, 12),
+    "6700": (175, 12), "6650 XT": (176, 11), "6600 XT": (160, 10),
+    "6600": (132, 9), "6500 XT": (107, 7),
+    "5700 XT": (225, 13), "5700": (180, 11), "5600 XT": (150, 10),
+    # NVIDIA
+    "5090": (575, 26), "5080": (360, 20), "5070 Ti": (300, 18),
+    "5070": (250, 16), "5060 Ti": (180, 12), "5060": (145, 10),
+    "4090": (450, 22), "4080 SUPER": (320, 20), "4080": (320, 20),
+    "4070 Ti SUPER": (285, 16), "4070 Ti": (285, 16),
+    "4070 SUPER": (220, 14), "4070": (200, 14),
+    "4060 Ti": (160, 12), "4060": (115, 10),
+    "3090 Ti": (450, 26), "3090": (350, 25), "3080 Ti": (350, 22),
+    "3080": (320, 22), "3070 Ti": (290, 18), "3070": (220, 16),
+    "3060 Ti": (200, 14), "3060": (170, 12), "3050": (130, 10),
+    "2080 Ti": (250, 18), "2080": (225, 16), "2070": (175, 12),
+    "2060": (160, 11), "1660": (120, 8), "1650": (75, 7),
+    # Intel Arc
+    "B580": (190, 11), "B570": (150, 10),
+    "A770": (225, 12), "A750": (190, 11), "A580": (175, 10),
+    "A380": (75, 8), "A310": (75, 7),
 }
 DEFAULT_GPU_POWER = (200, 15)
+INTEGRATED_GPU_POWER = (25, 4)
+# Integrated parts share the CPU package power budget, so a discrete-card
+# default would wildly overstate them.
+INTEGRATED_HINTS = ("uhd graphics", "hd graphics", "iris", "radeon graphics",
+                    "radeon(tm) graphics", "vega 3", "vega 6", "vega 7",
+                    "vega 8", "vega 11", "610m", "660m", "680m", "760m",
+                    "780m", "880m", "890m", "microsoft basic")
 DEFAULT_CPU_PACKAGE_W = 88
 DEFAULT_BASELINE_W = 60
 DEFAULT_PSU_W = 750
 CONFIG_NAME = "monitor_config.json"
 
 
-def gpu_power_profile(name):
+def gpu_power_profile(name, total_vram=None):
+    low = (name or "").lower()
     best = None
     for key, value in GPU_POWER_TABLE.items():
-        if key.lower() in (name or "").lower():
+        if key.lower() in low:
             if best is None or len(key) > len(best[0]):
                 best = (key, value)
-    return best[1] if best else DEFAULT_GPU_POWER
+    if best:
+        return best[1]
+    if any(hint in low for hint in INTEGRATED_HINTS):
+        return INTEGRATED_GPU_POWER
+    # An adapter with a sliver of dedicated memory is an iGPU, not a 200 W card.
+    if total_vram is not None and 0 < total_vram < 1 * 2**30:
+        return INTEGRATED_GPU_POWER
+    return DEFAULT_GPU_POWER
 
 
 def as_number(value, fallback, minimum=0.0, maximum=1e6):
@@ -479,7 +530,7 @@ def load_power_config(adapters, diag):
               "librehardwaremonitor_url": DEFAULT_LHM_URL,
               "gpu_power": {}}
     for adapter in adapters:
-        tbp, idle = gpu_power_profile(adapter["name"])
+        tbp, idle = gpu_power_profile(adapter["name"], adapter.get("total_vram"))
         config["gpu_power"][adapter["name"]] = {"tbp": tbp, "idle": idle}
     sticks = count_memory_sticks()
     if sticks:
@@ -728,6 +779,138 @@ class LhmBridge:
         return lhm_pick(self.readings, self._gpu_key(name),
                         ["GPU Core", "GPU", "GPU Temperature", "GPU Hot Spot",
                          "GCD", "GPU Package", "Core"], "\u00b0C")
+
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA: NVML
+#
+# nvml.dll ships with every NVIDIA driver - it is the library behind
+# nvidia-smi - and hands over power draw and temperature directly, with no
+# extra software and no kernel driver of our own. This is the path AMD's ADL
+# refused to provide, so NVIDIA users get measured watts out of the box.
+# ---------------------------------------------------------------------------
+
+NVML_SUCCESS = 0
+NVML_TEMPERATURE_GPU = 0
+
+
+class NvmlPciInfo(ctypes.Structure):
+    # busId is deliberately over-sized: the struct grew between NVML versions
+    # and writing into a buffer larger than the library expects is harmless.
+    _fields_ = [("busIdLegacy", ctypes.c_char * 16),
+                ("domain", ctypes.c_uint32), ("bus", ctypes.c_uint32),
+                ("device", ctypes.c_uint32), ("pciDeviceId", ctypes.c_uint32),
+                ("pciSubSystemId", ctypes.c_uint32),
+                ("busId", ctypes.c_char * 64)]
+
+
+class NvmlBridge:
+    """Live NVIDIA metrics keyed by PCI address. A no-op without the driver."""
+
+    def __init__(self):
+        self.available = False
+        self.last_error = None
+        self._lib = None
+        self._devices = {}          # (bus, device) -> handle
+        self._by_name = {}          # lowercase name -> handle
+        self.readings = {}          # (bus, device) -> {"watts", "temp", "fan"}
+        self._open()
+
+    def _open(self):
+        if sys.platform != "win32":
+            return
+        for candidate in ("nvml.dll",
+                          r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll"):
+            try:
+                lib = ctypes.CDLL(candidate)
+            except OSError:
+                continue
+            try:
+                if lib.nvmlInit_v2() != NVML_SUCCESS:
+                    continue
+            except AttributeError:
+                continue
+            self._lib = lib
+            break
+        if self._lib is None:
+            self.last_error = "nvml.dll not present (no NVIDIA driver)"
+            return
+
+        try:
+            count = ctypes.c_uint32(0)
+            if self._lib.nvmlDeviceGetCount_v2(ctypes.byref(count)) != NVML_SUCCESS:
+                return
+            for index in range(count.value):
+                handle = ctypes.c_void_p()
+                if self._lib.nvmlDeviceGetHandleByIndex_v2(
+                        ctypes.c_uint32(index), ctypes.byref(handle)) != NVML_SUCCESS:
+                    continue
+                name = ctypes.create_string_buffer(96)
+                if self._lib.nvmlDeviceGetName(handle, name, 96) == NVML_SUCCESS:
+                    self._by_name[name.value.decode("latin-1").strip().lower()] = handle
+                pci = NvmlPciInfo()
+                if self._lib.nvmlDeviceGetPciInfo_v3(
+                        handle, ctypes.byref(pci)) == NVML_SUCCESS:
+                    self._devices[(int(pci.bus), int(pci.device))] = handle
+            self.available = bool(self._devices or self._by_name)
+        except Exception as exc:
+            self.last_error = "%r" % (exc,)
+
+    def close(self):
+        if self._lib is not None:
+            try:
+                self._lib.nvmlShutdown()
+            except Exception:
+                pass
+            self._lib = None
+
+    def _handle_for(self, adapter):
+        pci = adapter.get("pci")
+        if pci:
+            handle = self._devices.get((pci[0], pci[1]))
+            if handle is not None:
+                return handle
+        name = (adapter.get("name") or "").strip().lower()
+        if name in self._by_name:
+            return self._by_name[name]
+        for known, handle in self._by_name.items():
+            if known and (known in name or name in known):
+                return handle
+        return None
+
+    def poll(self, adapters):
+        """Refresh readings for the adapters we were given. Never raises."""
+        if not self.available or self._lib is None:
+            return False
+        readings = {}
+        for adapter in adapters:
+            handle = self._handle_for(adapter)
+            if handle is None:
+                continue
+            entry = {}
+            try:
+                milliwatts = ctypes.c_uint32(0)
+                if self._lib.nvmlDeviceGetPowerUsage(
+                        handle, ctypes.byref(milliwatts)) == NVML_SUCCESS:
+                    entry["watts"] = milliwatts.value / 1000.0
+            except Exception:
+                pass
+            try:
+                celsius = ctypes.c_uint32(0)
+                if self._lib.nvmlDeviceGetTemperature(
+                        handle, NVML_TEMPERATURE_GPU,
+                        ctypes.byref(celsius)) == NVML_SUCCESS:
+                    entry["temp"] = float(celsius.value)
+            except Exception:
+                pass
+            if entry:
+                readings[adapter["name"]] = entry
+        self.readings = readings
+        return bool(readings)
+
+    def get(self, adapter_name, field):
+        return (self.readings.get(adapter_name) or {}).get(field)
 
 
 def estimate_gpu_watts(util, tbp, idle):
@@ -1156,6 +1339,9 @@ class Sampler(threading.Thread):
         rates = DiskRates()
         bridge = LhmBridge(self.power.get("librehardwaremonitor_url"),
                            enabled=bool(self.power.get("librehardwaremonitor_url")))
+        nvml = NvmlBridge()
+        if self.debug:
+            print("  nvml: %s" % ("ready" if nvml.available else nvml.last_error))
         try:
             counts = (psutil.cpu_count(logical=True),
                       psutil.cpu_count(logical=False))
@@ -1248,7 +1434,7 @@ class Sampler(threading.Thread):
                 })
 
             try:
-                sample["power"] = self._power_block(sample, counters, bridge)
+                sample["power"] = self._power_block(sample, counters, bridge, nvml)
             except Exception as exc:
                 # A bad config value must cost the power readout, not the app.
                 sample["power"] = None
@@ -1261,7 +1447,7 @@ class Sampler(threading.Thread):
 
         counters.close()
 
-    def _power_block(self, sample, counters, bridge):
+    def _power_block(self, sample, counters, bridge, nvml=None):
         cfg = self.power
         package_limit = cfg.get("cpu_package_watts", DEFAULT_CPU_PACKAGE_W)
         bridge_up = False
@@ -1269,6 +1455,12 @@ class Sampler(threading.Thread):
             bridge_up = bridge.poll()
         except Exception:
             bridge_up = False
+        nvml_up = False
+        if nvml is not None:
+            try:
+                nvml_up = nvml.poll(self.adapters)
+            except Exception:
+                nvml_up = False
 
         if bridge_up:
             sample["cpu_temp"] = bridge.cpu_temp()
@@ -1283,14 +1475,22 @@ class Sampler(threading.Thread):
         gpus = []
         for gpu in sample["gpus"]:
             profile = (cfg.get("gpu_power") or {}).get(gpu["name"]) or {}
-            tbp, idle = gpu_power_profile(gpu["name"])
+            tbp, idle = gpu_power_profile(gpu["name"], gpu.get("total_vram"))
             tbp = profile.get("tbp", tbp)
             idle = profile.get("idle", idle)
             watts, is_measured = None, False
-            if bridge_up:
-                watts = bridge.gpu_watts(gpu["name"])
+            if nvml_up:                       # vendor library, no extra software
+                watts = nvml.get(gpu["name"], "watts")
                 is_measured = watts is not None
-                gpu["temp"] = bridge.gpu_temp(gpu["name"])
+                temp = nvml.get(gpu["name"], "temp")
+                if temp is not None:
+                    gpu["temp"] = temp
+            if bridge_up:
+                if watts is None:
+                    watts = bridge.gpu_watts(gpu["name"])
+                    is_measured = watts is not None
+                if gpu.get("temp") is None:
+                    gpu["temp"] = bridge.gpu_temp(gpu["name"])
             if watts is None:
                 watts = estimate_gpu_watts(gpu.get("util"), tbp, idle)
             gpus.append({"watts": watts, "measured": is_measured, "tbp": tbp})
@@ -1302,7 +1502,8 @@ class Sampler(threading.Thread):
         return {"cpu_watts": cpu_watts, "cpu_measured": measured,
                 "cpu_limit": package_limit, "gpus": gpus, "baseline": baseline,
                 "baseline_items": items, "bridge": bridge_up,
-                "psu": cfg.get("psu_watts", DEFAULT_PSU_W), "total": total}
+                "psu": cfg.get("psu_watts", DEFAULT_PSU_W), "total": total,
+                "nvml": nvml_up}
 
     def _dump(self, counters, gpu_data, sample):
         print("-" * 78)

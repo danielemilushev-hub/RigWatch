@@ -10,7 +10,8 @@ there is nothing to install beyond Python itself.
 
 Built for a two-GPU AMD machine, because AMD has no `nvidia-smi` equivalent on Windows and most
 lightweight monitors either merge multiple GPUs into one figure or ignore the second card entirely.
-Nothing here is AMD-specific though — the GPU counters it reads are vendor-neutral WDDM ones.
+Nothing here is AMD-specific though: utilisation, VRAM and adapter names come from vendor-neutral
+WDDM interfaces, so AMD, NVIDIA and Intel cards all show up — separately, one card per panel.
 
 ## Run it
 
@@ -95,12 +96,31 @@ open the device with zero access rights, so neither needs elevation.
 the machine rather than assuming a number.
 
 **CPU package power** — `\Energy Meter(*)\Power` exposes the CPU's RAPL rails in milliwatts and is
-readable without elevation. This is a real measurement, and the UI labels it as such.
+readable without elevation. This is a real measurement, and the UI labels it as such. RAPL exists on
+both AMD and Intel.
+
+**NVIDIA GPU power and temperature** — `nvml.dll` ships with every NVIDIA driver (it is the library
+behind `nvidia-smi`), so on an NVIDIA card watts and temperature are read directly, with no extra
+software and no kernel driver. Devices are matched to adapters by PCI bus/device, falling back to
+name. If `nvml.dll` is absent the whole path is a silent no-op.
+
+## GPU support by vendor
+
+| | AMD | NVIDIA | Intel |
+| --- | --- | --- | --- |
+| Utilisation, VRAM, engine type | yes | yes | yes |
+| Card name, total VRAM | yes | yes | yes |
+| Power and temperature, no extra software | **no** — see below | **yes**, via NVML | no |
+| Power and temperature with LibreHardwareMonitor running | yes | yes | yes |
+| Board-power figure for the estimate | RX 5000–9000 | GTX 16 / RTX 20–50 | Arc A- and B-series |
+
+Integrated graphics are recognised by name and by having little or no dedicated VRAM, and are given
+a small power profile instead of a discrete-card default.
 
 ## About power, honestly
 
-There is no way for an unprivileged Windows program to read GPU board power or die temperature.
-Every route was tried on the development machine and refused:
+On NVIDIA, NVML solves this — see above. On **AMD** there is no equivalent: no unprivileged route to
+board power or die temperature exists. Every one was tried on the development machine and refused:
 
 | Route | Result |
 | --- | --- |
@@ -167,8 +187,13 @@ which is the fastest way to see why something reads `N/A`.
 ## Tested on
 
 Windows 11, Python 3.14, Ryzen 5 7500F, Radeon RX 7800 XT + RX 6650 XT, MSI B650 board.
-Python 3.9+ should work. Other vendors' GPUs should appear correctly — the counters and D3DKMT are
-vendor-neutral — but only AMD cards have been exercised. Reports welcome.
+Python 3.9+ should work.
+
+**Only AMD hardware has actually been exercised.** The NVIDIA and Intel paths are built on
+vendor-neutral interfaces (WDDM counters, D3DKMT) plus NVIDIA's own NVML, and every one of them
+degrades to `N/A` rather than failing if something is missing — but they are untested on real
+hardware. If you run this on an NVIDIA or Intel card, an issue saying what worked and what didn't
+would be genuinely useful. `--debug` output is the most helpful thing to attach.
 
 ## Files
 

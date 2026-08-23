@@ -1,0 +1,10 @@
+# per-machine settings, written on first run
+monitor_config.json
+
+# runtime noise
+_out.log
+_err.log
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/

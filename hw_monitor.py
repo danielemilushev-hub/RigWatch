@@ -134,6 +134,14 @@ class D3DKMT_ADAPTERADDRESS(ctypes.Structure):
 
 
 KMTQAITYPE_ADAPTERADDRESS = 6
+# D3DKMT_ADAPTER_PERFDATA. Windows exposes it to user mode, which makes GPU
+# temperature readable without any vendor library or kernel driver. The layout
+# was confirmed empirically: at offset 8 the memory clock matches what Adrenalin
+# reports exactly, and offset 56 is temperature in deci-Celsius.
+KMTQAITYPE_ADAPTERPERFDATA = 62
+PERFDATA_SIZE = 64
+PERFDATA_MEMCLOCK_OFFSET = 8
+PERFDATA_TEMPERATURE_OFFSET = 56
 
 
 def _adapters_via_d3dkmt(diag):
@@ -301,6 +309,67 @@ def _adapters_via_dxgi(diag):
     return out
 
 
+def sample_gpu_perfdata(diag=None):
+    """
+    {luid_key: {"temp": celsius, "mem_clock": hz}} for every adapter.
+
+    Cheap enough to call once a second: it is two kernel calls per adapter, and
+    the handles are closed again immediately so nothing is held across samples.
+    """
+    out = {}
+    if sys.platform != "win32":
+        return out
+    try:
+        gdi = ctypes.WinDLL("gdi32.dll")
+        enum = D3DKMT_ENUMADAPTERS2()
+        if gdi.D3DKMTEnumAdapters2(ctypes.byref(enum)) != 0 or not enum.NumAdapters:
+            return out
+        buf = (D3DKMT_ADAPTERINFO * enum.NumAdapters)()
+        enum.pAdapters = ctypes.cast(buf, ctypes.POINTER(D3DKMT_ADAPTERINFO))
+        if gdi.D3DKMTEnumAdapters2(ctypes.byref(enum)) != 0:
+            return out
+
+        for i in range(min(enum.NumAdapters, len(buf))):
+            info = buf[i]
+            try:
+                data = ctypes.create_string_buffer(PERFDATA_SIZE)
+                ctypes.memset(data, 0, PERFDATA_SIZE)   # PhysicalAdapterIndex 0
+                q = D3DKMT_QUERYADAPTERINFO(
+                    info.hAdapter, KMTQAITYPE_ADAPTERPERFDATA,
+                    ctypes.cast(data, ctypes.c_void_p), PERFDATA_SIZE)
+                if gdi.D3DKMTQueryAdapterInfo(ctypes.byref(q)) != 0:
+                    continue
+                raw = data.raw
+                deci = int.from_bytes(
+                    raw[PERFDATA_TEMPERATURE_OFFSET:
+                        PERFDATA_TEMPERATURE_OFFSET + 4], "little")
+                clock = int.from_bytes(
+                    raw[PERFDATA_MEMCLOCK_OFFSET:
+                        PERFDATA_MEMCLOCK_OFFSET + 8], "little")
+                entry = {}
+                # Sanity-gate the decode: a plausible die temperature only.
+                # If another Windows build lays the struct out differently this
+                # simply yields nothing instead of a wrong number.
+                if 0 < deci <= 1500:
+                    entry["temp"] = deci / 10.0
+                if 0 < clock < 100_000_000_000:
+                    entry["mem_clock"] = clock
+                if entry:
+                    key = luid_key(info.AdapterLuid.HighPart,
+                                   info.AdapterLuid.LowPart)
+                    out[key] = entry
+            finally:
+                try:
+                    gdi.D3DKMTCloseAdapter(
+                        ctypes.byref(D3DKMT_CLOSEADAPTER(info.hAdapter)))
+                except Exception:
+                    pass
+    except Exception as exc:
+        if diag is not None:
+            diag.append("perfdata: %r" % (exc,))
+    return out
+
+
 def _vendor_of(name):
     low = name.lower()
     for needle, label in (("radeon", "AMD"), ("amd", "AMD"), ("geforce", "NVIDIA"),
@@ -423,6 +492,24 @@ def parse_energy_meter(items):
     if have_core and core > 0:
         return core / 1000.0
     return None
+
+
+def parse_thermal_zones(items):
+    """
+    Hottest ACPI thermal zone in Celsius, or None.
+
+    The counter is in Kelvin. Zones are firmware-defined: on a laptop one of
+    them normally tracks the CPU, on most desktops none exist at all. Values
+    outside a sane range are discarded rather than displayed.
+    """
+    best = None
+    for name, value in items:
+        if (name or "").strip("_").lower() == "total":
+            continue
+        celsius = float(value) - 273.15
+        if 5.0 < celsius < 150.0:
+            best = celsius if best is None else max(best, celsius)
+    return best
 
 
 # Board power (TBP) and rough idle draw per card, matched by name substring.
@@ -938,6 +1025,10 @@ class GpuCounters:
     # AMD/Intel RAPL rails surface here as milliwatts; present on most desktops
     # and readable without elevation. This is a measured value, not a model.
     ENERGY_PATH = r"\Energy Meter(*)\Power"
+    # ACPI thermal zones. Desktop firmware usually implements none, but most
+    # laptops do, and this is the only route to a CPU-side temperature that
+    # does not need a kernel driver. Reported in Kelvin.
+    THERMAL_PATH = r"\Thermal Zone Information(*)\Temperature"
 
     def __init__(self):
         self._pdh = None
@@ -946,6 +1037,7 @@ class GpuCounters:
         self.last_error = None
         self.raw_instances = {}
         self.cpu_watts = None
+        self.cpu_temp = None
         self.energy_available = False
         self._open()
 
@@ -982,14 +1074,15 @@ class GpuCounters:
         for label, path in (("engine", self.ENGINE_PATH),
                             ("dedicated", self.DEDICATED_PATH),
                             ("shared", self.SHARED_PATH),
-                            ("energy", self.ENERGY_PATH)):
+                            ("energy", self.ENERGY_PATH),
+                            ("thermal", self.THERMAL_PATH)):
             handle = ctypes.c_void_p()
             status = pdh.PdhAddEnglishCounterW(query, path, 0, ctypes.byref(handle))
             if status == 0:
                 counters[label] = handle
                 if label == "energy":
                     self.energy_available = True
-            elif label != "energy":
+            elif label not in ("energy", "thermal"):
                 self.last_error = "counter unavailable: %s (0x%08X)" % (
                     path, status & 0xFFFFFFFF)
 
@@ -1051,11 +1144,12 @@ class GpuCounters:
             if self._pdh.PdhCollectQueryData(self._query) != 0:
                 return {}
             raw = {}
-            for label in ("engine", "dedicated", "shared", "energy"):
+            for label in ("engine", "dedicated", "shared", "energy", "thermal"):
                 handle = self._counters.get(label)
                 raw[label] = self._read_array(handle) if handle else []
             self.raw_instances = raw
             self.cpu_watts = parse_energy_meter(raw["energy"])
+            self.cpu_temp = parse_thermal_zones(raw["thermal"])
             return aggregate_gpu_counters(raw["engine"], raw["dedicated"],
                                           raw["shared"])
         except Exception as exc:
@@ -1398,15 +1492,23 @@ class Sampler(threading.Thread):
             if not counters.available:
                 sample["note"] = counters.last_error or "GPU counters unavailable"
 
+            try:
+                perfdata = sample_gpu_perfdata()
+            except Exception:
+                perfdata = {}
+
             for adapter in self.adapters:
                 entry = next((gpu_data[k] for k in adapter["keys"] if k in gpu_data),
                              None)
+                perf = next((perfdata[k] for k in adapter["keys"]
+                             if k in perfdata), None) or {}
                 sample["gpus"].append({
                     "name": adapter["name"],
                     "vendor": adapter.get("vendor", "GPU"),
                     "total_vram": adapter["total_vram"],
                     "util": entry["util"] if entry else None,
-                    "temp": None,
+                    "temp": perf.get("temp"),
+                    "mem_clock": perf.get("mem_clock"),
                     "engine": entry["engine"] if entry else None,
                     "vram_used": entry["vram_used"] if entry else None,
                     "shared_used": entry["shared_used"] if entry else None,
@@ -1462,8 +1564,12 @@ class Sampler(threading.Thread):
             except Exception:
                 nvml_up = False
 
+        # Prefer a real CPU sensor from the bridge; fall back to the ACPI zone.
         if bridge_up:
             sample["cpu_temp"] = bridge.cpu_temp()
+        if sample.get("cpu_temp") is None:
+            sample["cpu_temp"] = counters.cpu_temp
+            sample["cpu_temp_is_zone"] = counters.cpu_temp is not None
 
         cpu_watts = counters.cpu_watts          # RAPL, already a measurement
         if cpu_watts is None and bridge_up:
@@ -1483,7 +1589,7 @@ class Sampler(threading.Thread):
                 watts = nvml.get(gpu["name"], "watts")
                 is_measured = watts is not None
                 temp = nvml.get(gpu["name"], "temp")
-                if temp is not None:
+                if temp is not None and gpu.get("temp") is None:
                     gpu["temp"] = temp
             if bridge_up:
                 if watts is None:
@@ -1566,6 +1672,7 @@ class DemoSampler(Sampler):
                     "total_vram": ad["total_vram"],
                     "util": None if broken else util,
                     "temp": None if broken else 48 + util * 0.32,
+                    "mem_clock": None if broken else 2425000000,
                     "engine": None if broken else random.choice(engines),
                     "vram_used": None if broken else used,
                     "shared_used": None if broken else int(1.4 * 2**30),
@@ -2049,9 +2156,11 @@ class CpuCard(Card):
             text += "   %.0f°C" % temp
         self.itemconfig(self.power, text=text,
                         fill=T.FG if watts is not None else T.MUTED)
-        self.itemconfig(self.power_sub,
-                        text="package · measured" if power.get("cpu_measured")
-                        else "package · estimated")
+        label = "package · measured" if power.get("cpu_measured") \
+            else "package · estimated"
+        if temp and s.get("cpu_temp_is_zone"):
+            label += " · ACPI zone"
+        self.itemconfig(self.power_sub, text=label)
         freq = s.get("freq")
         self.itemconfig(self.foot, text="%s     up %s" % (
             ("%.2f GHz" % (freq / 1000.0)) if freq else "-- GHz",

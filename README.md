@@ -99,10 +99,18 @@ the machine rather than assuming a number.
 readable without elevation. This is a real measurement, and the UI labels it as such. RAPL exists on
 both AMD and Intel.
 
+**GPU temperature** — `D3DKMT_ADAPTER_PERFDATA`, query type 62 of `D3DKMTQueryAdapterInfo`. Windows
+exposes this to user mode, so GPU die temperature is readable on **any vendor** with no driver, no
+vendor library and no elevation. The struct layout was confirmed empirically rather than trusted:
+at offset 8 the memory clock matches what Radeon Software reports to the megahertz, and offset 56 is
+temperature in deci-Celsius, which read 57.0 °C against Adrenalin's 58 °C and tracked a second card
+cooling from 56 °C to 47 °C as it idled. The decode is sanity-gated to 0–150 °C, so on a Windows
+build that lays the struct out differently the field simply reads `N/A` instead of showing nonsense.
+
 **NVIDIA GPU power and temperature** — `nvml.dll` ships with every NVIDIA driver (it is the library
-behind `nvidia-smi`), so on an NVIDIA card watts and temperature are read directly, with no extra
-software and no kernel driver. Devices are matched to adapters by PCI bus/device, falling back to
-name. If `nvml.dll` is absent the whole path is a silent no-op.
+behind `nvidia-smi`), so on an NVIDIA card watts are read directly too, with no extra software and
+no kernel driver. Devices are matched to adapters by PCI bus/device, falling back to name. If
+`nvml.dll` is absent the whole path is a silent no-op.
 
 ## GPU support by vendor
 
@@ -110,8 +118,11 @@ name. If `nvml.dll` is absent the whole path is a silent no-op.
 | --- | --- | --- | --- |
 | Utilisation, VRAM, engine type | yes | yes | yes |
 | Card name, total VRAM | yes | yes | yes |
-| Power and temperature, no extra software | **no** — see below | **yes**, via NVML | no |
-| Power and temperature with LibreHardwareMonitor running | yes | yes | yes |
+| **GPU temperature**, no extra software | **yes**, via D3DKMT | **yes** | **yes**, via D3DKMT |
+| GPU power, no extra software | no — estimated | **yes**, via NVML | no — estimated |
+| GPU power with LibreHardwareMonitor running | yes | yes | yes |
+| CPU package power | yes, RAPL | yes, RAPL | yes, RAPL |
+| CPU temperature | needs LibreHardwareMonitor | needs LHM | needs LHM |
 | Board-power figure for the estimate | RX 5000–9000 | GTX 16 / RTX 20–50 | Arc A- and B-series |
 
 Integrated graphics are recognised by name and by having little or no dedicated VRAM, and are given
@@ -119,8 +130,9 @@ a small power profile instead of a discrete-card default.
 
 ## About power, honestly
 
-On NVIDIA, NVML solves this — see above. On **AMD** there is no equivalent: no unprivileged route to
-board power or die temperature exists. Every one was tried on the development machine and refused:
+Temperature is solved — see D3DKMT above. **Power** is the part that is not. On NVIDIA, NVML gives
+it. On **AMD** there is no unprivileged route to board power at all. Every one was tried and
+refused:
 
 | Route | Result |
 | --- | --- |
@@ -130,13 +142,15 @@ board power or die temperature exists. Every one was tried on the development ma
 | ADLX `ADLXInitializeWithCallerAdl` with a live ADL context | initialises, then access-violates inside `GetGPUs` |
 | `D3DKMTQueryAdapterInfo` perf-data types | nothing with a usable power field |
 
-The sensors are not "already reported to Windows" waiting to be picked up. CPU package power sits
-behind model-specific registers and the Ryzen/Intel power-management mailbox, board temperatures and
-fan tachometers behind the Super I/O chip's I/O ports, DIMM telemetry behind SMBus, and GPU board
-power behind the display driver. All of those are ring-0. That is exactly why HWMonitor, HWiNFO,
-LibreHardwareMonitor, MSI Center and Adrenalin each install a kernel driver. Windows itself surfaces
-only a small documented subset to user mode — RAPL energy, the WDDM GPU counters, SMART — and this
-app already reads all of that subset.
+Most sensors are not "already reported to Windows" waiting to be picked up. CPU package temperature
+sits behind model-specific registers and the power-management mailbox, board temperatures and fan
+tachometers behind the Super I/O chip's I/O ports, DIMM telemetry behind SMBus, and AMD GPU board
+power behind the display driver. All of those are ring-0, which is why HWMonitor, HWiNFO,
+LibreHardwareMonitor, MSI Center and Adrenalin each ship a kernel driver.
+
+But the subset Windows *does* publish to user mode is bigger than it first appears, and this app
+reads all of it: RAPL energy, the WDDM GPU counters, SMART, SMBIOS, the storage IOCTLs — and
+`D3DKMT_ADAPTER_PERFDATA`, which is where GPU temperature turned out to be hiding.
 
 ### Optional: LibreHardwareMonitor bridge
 

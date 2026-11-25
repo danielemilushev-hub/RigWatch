@@ -60,7 +60,7 @@ From a terminal:
 |---|---|
 | Overview | Health verdict, one card per component, all temperatures, busiest apps |
 | Processor | Utilisation, clock, measured package power, load per thread, clock and power per core |
-| Graphics | Utilisation, temperature, hotspot, measured board power, fan, video memory, clocks, voltage, workload by engine, apps using the card |
+| Graphics | Utilisation, temperature, hotspot, measured board power, fan, video memory, clocks, voltage, frame rate (FPS), workload by engine, apps using the card, and every connected monitor |
 | Memory | In use, available, committed, cache, kernel pools, largest apps, installed modules |
 | Storage | Per drive: temperature, health (rated life left), activity, read/write speed, lifetime totals, volumes |
 | Network | Download/upload on the default route, session and startup totals, every active adapter |
@@ -76,15 +76,63 @@ that hides the computer name and network addresses for screenshots and streaming
 ### Minimised: numbers on the taskbar
 
 Minimise the window and a compact strip appears on the taskbar, next to the weather widget, showing
-processor load, memory, each graphics card's load and temperature, and measured watts. Click it to
-bring the window back, drag it anywhere (the position is remembered), right-click for a menu.
-Turn it off under Settings → Taskbar strip.
+processor load, memory, each graphics card's load and temperature, the frame rate of the program you
+are using, and measured watts. Click it to bring the window back, drag it anywhere (the position is
+remembered), right-click for a menu. Turn it off under Settings → Taskbar strip.
 
 ![Taskbar strip](docs/taskbar-strip.png)
 
 Windows 11 removed the deskband API, so nothing can add a real item *inside* the taskbar any more.
 This is a borderless always-on-top strip sized to the taskbar and parked on it, which is as close as
 third-party code can get. It never takes keyboard focus.
+
+### Frame rate (FPS)
+
+RigWatch shows how many frames per second the program you are using draws: on the taskbar strip, on
+the Graphics page (with a chart and a list of every program that is drawing), and in the sensor table
+with minimum, maximum and average.
+
+- **Nothing is injected into games.** Windows' graphics kernel can log one event for every frame a
+  program presents. RigWatch listens to that log and counts the events per program. Direct3D 9 to 12,
+  Vulkan and OpenGL all pass through the same point, so one method covers them.
+- **No administrator rights were needed** on the test PC, and the sensor helper is not involved.
+  Windows allows this for accounts in its "Performance Log Users" group, which a signed-in account
+  normally is. If Windows refuses on some account, RigWatch says "not available"; it never shows a guess.
+- **Whose frame rate:** the window you are working in, including the processes it started (a browser
+  draws from a child process). A dash means that program is not drawing right now. While RigWatch's
+  own window is in front, the program you used before it stays the one being measured.
+- The number is the count of frames presented in the last second, so it trails by about a second.
+- In **exclusive full screen** nothing can be drawn over a game without injecting into it, so the
+  strip is not visible there. In borderless and windowed modes the strip is an always-on-top window
+  and should stay visible; this has not been tried with a game yet.
+- Turn it off under Settings → Frame rate (FPS). That stops the listening completely.
+
+Checked against a test page that draws on every screen refresh: the page reported 165.0 frames per
+second on a 165 Hz monitor and RigWatch counted 164 to 165. It has not yet been compared with the
+built-in counter of a game.
+
+### Monitors
+
+The Graphics page lists every connected monitor: name, resolution, refresh rate now and the highest
+available at that resolution, connection (DisplayPort, HDMI, built-in …), size, colour depth, whether
+HDR is on, Windows' scaling, and the graphics card it is plugged into. HDR is reported separately
+from Windows' automatic wide-colour mode, which is easy to mistake for it.
+
+### Start with Windows
+
+Turn on **Settings → Start with Windows** and RigWatch opens by itself when you sign in. It starts
+minimised, so only the taskbar strip shows; click the strip to open the window.
+
+- It adds one entry to your own account's start-up list, the same list Task Manager shows under
+  *Startup apps*. No administrator rights, no service. Turning the switch off removes the entry.
+- The switch shows what Windows will really do. If you switch RigWatch off in Task Manager's list, the
+  switch here says so; turning it on here allows it again.
+- The entry points at the copy of RigWatch you turned it on from. If you move `RigWatch.exe`, the entry
+  is corrected the next time you open the app from its new place.
+- A copy on an external drive only starts if the drive is plugged in when you sign in. Windows skips a
+  missing program without a message, and RigWatch tells you when this applies.
+- Opening RigWatch while it is already running brings the running window forward. A second copy is
+  never started.
 
 ## Where the numbers come from
 
@@ -104,6 +152,8 @@ case fans and voltages are the exception, covered below.
 | Drive activity and speed | Windows disk statistics (`IOCTL_DISK_PERFORMANCE`) |
 | Memory, network, processes | Windows, via `psutil` and `GetPerformanceInfo` |
 | Motherboard, BIOS, memory modules | SMBIOS firmware table |
+| Frame rate (FPS) per program | Windows' graphics event log: `Microsoft-Windows-DxgKrnl` present events through a private real-time trace session |
+| Monitor resolution, refresh rate, connection, colour mode | Windows display configuration (`QueryDisplayConfig`) and each monitor's EDID |
 
 ### CPU temperature, case fans and voltages
 
@@ -138,7 +188,8 @@ helper is off.
 
 ### Not included
 
-- Frame rate (FPS): reading it reliably needs administrator rights or injecting into games.
+- Frame times and "1% low" figures: only the frames-per-second count is shown for now.
+- An in-game overlay: that needs code injected into the game, which RigWatch does not do.
 - Whole-system power at the wall: only the CPU package and the graphics card report measured draw.
 
 ## For developers
@@ -154,12 +205,14 @@ The service listens on this computer only (`127.0.0.1:47115`; a free port is use
 | `GET /api/stream` | Server-sent events, one snapshot per sample |
 | `GET /api/sensors.csv`, `/api/history.csv` | CSV exports |
 | `GET /api/helper` | State of the sensor helper (off, starting, on, driver missing, …) |
+| `GET /api/startup` | Whether RigWatch starts with Windows (`on`, `off`, or `blocked` in Task Manager) |
 
 Layout:
 
 ```
 rigwatch/
-  sensors/        one module per data source (pdh, dxgi, d3dkmt, adl, nvidia, storage, smbios, winsys, bridge)
+  sensors/        one module per data source (pdh, dxgi, d3dkmt, adl, nvidia, storage, smbios, winsys, bridge,
+                  frames for the frame rate, displays for the monitors)
                   helper.py is the elevated sensor helper (self-contained); helper_client.py is the app's side of it
   vendor/lhm/     LibreHardwareMonitor's sensor engine and its licences. Not kept in git: fetched from
                   nuget.org by tools/fetch-sensor-engine.py (pinned SHA-512), bundled into the exe by the build
@@ -167,6 +220,7 @@ rigwatch/
   server.py       local HTTP API and static files
   app.py          window, mini mode, command line
   strip.py        the taskbar strip shown while minimised
+  startup.py      the "Start with Windows" entry in the user's start-up list
   ui/             the interface (plain HTML, CSS and ES modules; no build step)
 tools/            build-exe.ps1 + rigwatch.spec (standalone exe), create-shortcut.ps1
 art/              Blender scripts that build and export the 3D illustrations
@@ -176,6 +230,11 @@ tests/            python -m unittest discover -s tests
 Run the tests with `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`.
 
 Notes for anyone extending the sensor layer:
+
+- Frame rate: the trace session is named `RigWatch-Frames-<process id>` and is stopped when RigWatch
+  closes. If RigWatch is killed, the next start stops the session it left behind. Windows delivers
+  the events in late, uneven batches unless asked, so `sensors/frames.py` flushes the session on every
+  sample and uses one shared buffer instead of one per processor core.
 
 - The sensor helper was run on an AMD Ryzen 5 7500F with an MSI B650 board (Nuvoton NCT6687D): CPU
   temperature, board temperatures, fans and voltages all read correctly. Intel processors and other

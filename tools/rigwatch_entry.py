@@ -1,6 +1,18 @@
-"""Entry point for the standalone RigWatch.exe build (see tools/build-exe.ps1)."""
+"""Entry point for the standalone RigWatch.exe build (see tools/build-exe.ps1).
+
+A source checkout uses it too: "Start with Windows" runs this file directly,
+because a start-up entry has no working directory for ``python -m rigwatch``.
+"""
 
 import sys
+
+if not getattr(sys, "frozen", False):
+    # Run as a script, Python puts this folder (tools/) on the import path.
+    # The rigwatch package lives one level up.
+    import os
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
 
 _CONSOLE_FLAGS = {"--json", "--server", "--browser", "--version", "-h", "--help"}
 

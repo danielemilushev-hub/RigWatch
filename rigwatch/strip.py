@@ -56,6 +56,12 @@ def build_fields(snap: dict, temp_unit: str = "C") -> list[dict]:
         fields.append({"label": short_gpu_label(g.get("name"), i), "color": GPU, "wide": True,
                        "value": None if g.get("util") is None else f"{g['util']:.0f}%",
                        "extra": _temp(g.get("temp_c"), temp_unit)})
+    fps = snap.get("fps") or {}
+    if fps.get("available"):
+        # The program in use is not always drawing; that is a dash, not a missing sensor.
+        value = fps.get("value")
+        fields.append({"label": "FPS", "color": GPU, "wide": False, "extra": None, "placeholder": "–",
+                       "value": None if value is None else f"{value:.0f}"})
     total = power.get("total_w")
     fields.append({"label": "WATT", "color": PWR, "wide": False,
                    "value": None if total is None else f"{total:.0f}W", "extra": None})
@@ -302,7 +308,7 @@ class TaskbarStrip:
                 g.FillEllipse(dot, float(x), float(mid - 10 * s), float(6 * s), float(6 * s))
                 dot.Dispose()
                 g.DrawString(field["label"], label_font, muted, D.PointF(float(x + 10 * s), float(mid - 15 * s)), fmt)
-                text = field["value"] or "N/A"
+                text = field["value"] or field.get("placeholder") or "N/A"
                 g.DrawString(text, value_font, ink if field["value"] else muted, D.PointF(float(x), float(mid - 1 * s)), fmt)
                 if field["extra"]:
                     w = g.MeasureString(text, value_font, 10000, fmt).Width

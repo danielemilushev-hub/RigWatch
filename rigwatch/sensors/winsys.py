@@ -168,14 +168,14 @@ def process_snapshot() -> list[dict]:
         create_time, user_time, kernel_time = struct.unpack_from("<qqq", raw, offset + 32)
         name_len = struct.unpack_from("<H", raw, offset + 56)[0]
         name_ptr = struct.unpack_from("<Q", raw, offset + 64)[0]
-        pid = struct.unpack_from("<Q", raw, offset + 80)[0]
+        pid, parent = struct.unpack_from("<QQ", raw, offset + 80)
         working_set = struct.unpack_from("<Q", raw, offset + 144)[0]
         if name_ptr and name_len:
             start = name_ptr - base
             name = raw[start:start + name_len].decode("utf-16-le", "replace") if 0 <= start < len(raw) else ""
         else:
             name = "System Idle Process" if pid == 0 else ""
-        out.append({"pid": pid, "name": name, "threads": threads, "create_time": create_time,
+        out.append({"pid": pid, "parent": parent, "name": name, "threads": threads, "create_time": create_time,
                     "cpu_100ns": user_time + kernel_time, "private_ws": private_ws, "working_set": working_set})
         if not next_off:
             break

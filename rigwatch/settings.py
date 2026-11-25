@@ -16,6 +16,7 @@ DEFAULTS = {
     "taskbar_strip": True,    # show live numbers on the taskbar while minimised
     "strip_pos": None,        # [x, y] once the user has dragged the strip; None = parked
     "privacy": False,         # hide the computer name and network addresses in the UI
+    "fps": True,              # read the frame rate of running programs
 }
 _ALLOWED = {
     "interval": lambda v: isinstance(v, (int, float)) and 0.25 <= float(v) <= 10,
@@ -27,6 +28,7 @@ _ALLOWED = {
     "strip_pos": lambda v: v is None or (isinstance(v, list) and len(v) == 2
                                          and all(isinstance(n, int) for n in v)),
     "privacy": lambda v: isinstance(v, bool),
+    "fps": lambda v: isinstance(v, bool),
 }
 
 

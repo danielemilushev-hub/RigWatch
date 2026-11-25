@@ -6,6 +6,7 @@ import { h, setText, fmt, DASH, icon, chip, setChip, meter, tile, card, facts, a
          tempTone, loadTone, prefs, ident } from './ui.js';
 import { TimeChart, drawSpark } from './chart.js';
 import { cpuTempDialog, helperSetting, helperSummary, HELPER_SOURCE } from './helper.js';
+import { startupSetting } from './startup.js';
 
 const GB = 1024 ** 3;
 const tail = (arr, n) => (arr ? arr.slice(Math.max(0, arr.length - n)) : []);
@@ -360,6 +361,7 @@ function gpu(ctx) {
   if (!st.gpus.length) {
     return { el: h('div.page', card(null, h('p.muted', 'No graphics adapter was found on this system.'))), update() {}, title: 'Graphics', sub: '' };
   }
+  const frames = frameRateBlock(ctx), screens = displaysBlock();
   const sections = st.gpus.map(g => {
     const p = `gpu${g.index}`;
     const head = pageHead({ artName: 'gpu', color: '--c-gpu', title: g.name, lines: { kicker: 'Graphics',
@@ -382,7 +384,8 @@ function gpu(ctx) {
 
     const engines = h('div.hbars');
     const gprocs = procList('Nothing is using the graphics card right now.');
-    const el = h('div.gpu-section', head, tiles, cUtil, h('div.grid.two', cTemp, cPower),
+    // Frames belong to a program, not to a card, so the frame rate is shown once, under the first card.
+    const el = h('div.gpu-section', head, tiles, g.index === st.gpus[0].index ? frames.el : null, cUtil, h('div.grid.two', cTemp, cPower),
       h('div.grid.two', cVram, card('Workload by engine', engines, h('p.card-note', 'Which part of the card is busy: rendering, compute, video or copy.'))),
       card('Apps using this card', gprocs));
 
@@ -416,8 +419,88 @@ function gpu(ctx) {
     }
     return { el, update };
   });
-  const el = h('div.page', ...sections.map(s => s.el));
-  return { el, update: s => sections.forEach(x => x.update(s)), title: 'Graphics', sub: st.gpus.map(g => g.name).join(' · '), range: true };
+  const el = h('div.page', ...sections.map(s => s.el), screens.el);
+  return { el, update: s => { sections.forEach(x => x.update(s)); frames.update(s); screens.update(s); },
+    title: 'Graphics', sub: st.gpus.map(g => g.name).join(' · '), range: true };
+}
+
+// ------------------------------------------------ frame rate and monitors
+const hz = v => (v == null ? DASH : (Math.abs(v - Math.round(v)) < 0.05 ? fmt.int(Math.round(v)) : v.toFixed(2)) + ' Hz');
+
+/** The frame rate right now, and whose it is: [number, who]. */
+export function frameRateText(f, displays) {
+  const screen = (displays || []).find(d => d.primary) || (displays || [])[0];
+  const of = screen && screen.refresh_hz ? `screen ${hz(screen.refresh_hz)}` : null;
+  if (f.value == null) return [DASH, [f.app ? `${f.app} is not drawing` : 'Nothing in use is drawing', of].filter(Boolean).join('  ·  ')];
+  return [fmt.int(Math.round(f.value)), [f.app, of].filter(Boolean).join('  ·  ')];
+}
+
+function frameRateBlock(ctx) {
+  const chart = chartCard('Frame rate', { series: [{ key: 'fps', label: 'Frame rate', color: '--c-gpu' }],
+    format: v => fmt.int(Math.round(v)) + ' FPS', tick: v => fmt.int(v), floor: 60 },
+    'Frames per second drawn by the program you are using, counted from Windows’ own graphics event log. Nothing is added to the program.');
+  const value = h('span.fps-value', DASH), who = h('span.fps-who');
+  chart.querySelector('.card-title').after(h('div.fps-now', value, h('span.fps-unit', 'FPS'), who));
+  const list = procList('Nothing is drawing frames right now.');
+  const drawing = card('Programs drawing frames', list);
+  const why = h('p.muted');
+  const off = card('Frame rate', why);
+  const el = h('div.grid.two', chart, drawing, off);
+  function update(s) {
+    const f = s.fps || { enabled: false };
+    const live = !!(f.enabled && f.available);
+    chart.hidden = drawing.hidden = !live;
+    off.hidden = live;
+    if (!live) { setText(why, f.reason || 'Frame rate reading is not available.'); return; }
+    const [number, whose] = frameRateText(f, s.displays);
+    setText(value, number); setText(who, whose);
+    const top = Math.max(30, ...f.apps.map(a => a.fps));
+    list.set(f.apps.map(a => ({ name: a.name, count: 1, share: (a.fps / top) * 100, value: fmt.int(Math.round(a.fps)), sub: 'FPS' })));
+    chart.chart.setData(ctx.state.hist, ctx.win());
+  }
+  return { el, update };
+}
+
+function displayFacts(d) {
+  const colour = [d.bits_per_channel ? `${d.bits_per_channel}-bit` : null, d.wide_colour ? 'wide colour' : null].filter(Boolean).join(', ');
+  const hdr = { on: 'On', off: 'Off (supported)', unsupported: 'Not supported' }[d.hdr];
+  const native = d.native && d.width && (d.native[0] !== d.width || d.native[1] !== d.height) ? `${d.native[0]} × ${d.native[1]}` : null;
+  return [
+    ['Resolution', d.width ? `${d.width} × ${d.height}` : null],
+    ['Native resolution', native],
+    ['Refresh rate', d.refresh_hz ? hz(d.refresh_hz) + (d.interlaced ? ' interlaced' : '') : null],
+    ['Highest at this resolution', d.max_refresh_hz ? hz(d.max_refresh_hz) : null],
+    ['Connection', d.connection],
+    ['Size', d.size_in ? `${d.size_in} inch` : null],
+    ['Colour', colour || null],
+    ['HDR', hdr],
+    ['Windows scaling', d.scale_pct ? `${d.scale_pct}%` : null],
+    ['Rotation', d.rotation ? `${d.rotation}°` : null],
+    ['Graphics card', d.adapter ? shortGpu(d.adapter) : null],
+    ['Model year', d.year],
+  ].filter(([, value]) => value != null && value !== '');
+}
+
+function displaysBlock() {
+  const body = h('div.displays');
+  const el = card('Displays', body);
+  let shown = null;
+  function update(s) {
+    const list = s.displays || [];
+    const key = JSON.stringify(list);
+    if (key === shown) return;
+    shown = key;
+    if (!list.length) { body.replaceChildren(h('p.muted', 'Windows reports no active monitor.')); return; }
+    body.replaceChildren(...list.map(d => h('div.display',
+      h('div.display-head', h('span.display-name', d.name), d.primary && list.length > 1 ? chip('info', 'Main display') : null),
+      h('div.display-grid', displayFacts(d).map(([label, value]) => {
+        const item = stat(label);
+        setText(item.v, String(value));
+        item.v.title = String(value);
+        return item;
+      })))));
+  }
+  return { el, update };
 }
 
 // ================================================================== MEMORY
@@ -616,7 +699,7 @@ function sensors(ctx) {
     if (v == null) return DASH;
     if (r.kind === 'temp') return fmt.temp(v);
     if (r.unit === '%') return v.toFixed(1) + '%';
-    const digits = { W: 1, MHz: 0, RPM: 0, mV: 0, lanes: 0, MB: 0, GB: 1, 'MB/s': 2, 'Mbit/s': 2 }[r.unit];
+    const digits = { W: 1, MHz: 0, RPM: 0, mV: 0, lanes: 0, MB: 0, GB: 1, 'MB/s': 2, 'Mbit/s': 2, FPS: 0 }[r.unit];
     const d = digits != null ? digits : Math.abs(v) >= 100 ? 0 : 1;
     return new Intl.NumberFormat('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }).format(v) + (r.unit ? ' ' + r.unit : '');
   };
@@ -677,10 +760,14 @@ function settingsPage(ctx) {
   const strip = h('input', { type: 'checkbox', class: 'switch', 'aria-label': 'Show the taskbar strip when minimised' });
   strip.checked = S().taskbar_strip !== false;
   strip.addEventListener('change', () => ctx.saveSettings({ taskbar_strip: strip.checked }));
+  const fpsSwitch = h('input', { type: 'checkbox', class: 'switch', 'aria-label': 'Read the frame rate (FPS)' });
+  fpsSwitch.checked = S().fps !== false;
+  fpsSwitch.addEventListener('change', () => ctx.saveSettings({ fps: fpsSwitch.checked }));
   const privacy = h('input', { type: 'checkbox', class: 'switch', 'aria-label': 'Hide identifying details' });
   privacy.checked = !!S().privacy;
   privacy.addEventListener('change', () => ctx.saveSettings({ privacy: privacy.checked }));
   const sensorHelper = helperSetting();
+  const startup = startupSetting(() => S().taskbar_strip !== false);
   const base = location.origin;
   const api = [['/api/snapshot', 'Latest reading of every sensor'], ['/api/static', 'Hardware inventory'], ['/api/history', 'Recent history for the charts'],
     ['/api/sensors', 'Flat sensor list with min / max / average'], ['/api/stream', 'Live updates (server-sent events)'], ['/api/sensors.csv', 'Sensor table as CSV']];
@@ -692,7 +779,9 @@ function settingsPage(ctx) {
       row('Theme', 'Follow Windows, or always use one.', select('theme', [['system', 'Match Windows'], ['dark', 'Dark'], ['light', 'Light']])),
       row('Keep on top', 'Keep the RigWatch window above other windows.', onTop),
       row('Taskbar strip', 'While RigWatch is minimised, show live numbers on the taskbar. Click the strip to reopen, drag it to move it, right-click for more.', strip),
+      row('Frame rate (FPS)', 'Count the frames the program you are using draws each second, and show it on the taskbar strip and the Graphics page. RigWatch reads Windows’ own graphics event log; nothing is added to games.', fpsSwitch),
       row('Hide identifying details', 'Hide the computer name and network addresses, for screenshots and streaming.', privacy)),
+    card('Start-up', startup),
     card('Sensors', h('p.card-note.lead', 'Windows keeps a few sensors behind administrator rights. A small helper reads them for RigWatch; turning it on asks Windows for permission once.'),
       sensorHelper),
     card('For developers', h('p.card-note.lead', 'RigWatch serves its readings on this computer only (127.0.0.1). Use them in your own scripts, overlays or dashboards.'),
@@ -702,7 +791,7 @@ function settingsPage(ctx) {
         h('div.muted', `${st.os.name}${st.os.version ? ' ' + st.os.version : ''} · build ${st.os.build}`),
         h('div.muted', [st.board.manufacturer, st.board.product].filter(Boolean).join(' ') + (st.bios.version ? ` · BIOS ${st.bios.version}` : '')),
         h('div.muted', 'Hardware illustrations rendered in Blender. Backdrop photography generated with cyberninjas.')))));
-  return { el, update(s) { sensorHelper.update(s); }, title: 'Settings', sub: '' };
+  return { el, update(s) { sensorHelper.update(s); startup.update(s); }, title: 'Settings', sub: '' };
 }
 
 export const pages = { overview, cpu, gpu, memory, storage: storagePage, network, processes, sensors, settings: settingsPage };

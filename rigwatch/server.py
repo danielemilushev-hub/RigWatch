@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .collector import Collector
 from .settings import Settings
+from .startup import StartupEntry
 
 UI_DIR = Path(__file__).parent / "ui"
 DEFAULT_PORT = 47115
@@ -31,6 +32,7 @@ class RigWatchServer(ThreadingHTTPServer):
         self.collector = collector
         self.settings = settings
         self.window_api = window_api
+        self.startup = StartupEntry()
         self.stream_clients = 0
         self.last_client_seen = time.monotonic()
         self.clients_lock = threading.Lock()
@@ -90,9 +92,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(self.server.settings.get())
             if path == "/api/helper":
                 return self._json(c.helper.status())
+            if path == "/api/startup":
+                return self._json(self.server.startup.status())
             if path == "/api/ping":
+                api = self.server.window_api
                 return self._json({"app": "rigwatch", "version": __version__,
-                                   "clients": self.server.stream_clients})
+                                   "clients": self.server.stream_clients,
+                                   "window": bool(api is not None and api.window is not None)})
             if path == "/api/sensors.csv":
                 return self._sensors_csv()
             if path == "/api/history.csv":
@@ -185,6 +191,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/settings":
             values = self.server.settings.update(body)
             self.server.collector.set_interval(values["interval"])
+            if "fps" in body:
+                self.server.collector.set_frames(values["fps"])
             api = self.server.window_api
             if api is not None and "always_on_top" in body:
                 api.set_on_top(values["always_on_top"])
@@ -192,6 +200,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sensors/reset":
             self.server.collector.reset_stats()
             return self._json({"ok": True})
+        if path == "/api/startup":            # the "Start with Windows" switch
+            if not isinstance(body.get("enabled"), bool):
+                return self._json({"error": "expected {\"enabled\": true or false}"}, 400)
+            entry = self.server.startup
+            return self._json(entry.enable() if body["enabled"] else entry.disable())
         if path == "/api/helper/enable":      # shows one Windows permission prompt; returns once it is answered
             return self._json(self.server.collector.helper.enable())
         if path == "/api/helper/disable":

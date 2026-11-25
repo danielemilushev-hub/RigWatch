@@ -10,6 +10,7 @@ Design rules
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -19,7 +20,7 @@ import psutil
 
 from . import __version__
 from .sensors import adl as adl_mod
-from .sensors import bridge, d3dkmt, dxgi, helper_client, nvidia, smbios, storage, winsys
+from .sensors import bridge, d3dkmt, displays, dxgi, frames, helper_client, nvidia, smbios, storage, winsys
 from .sensors.pdh import PdhQuery
 
 HISTORY_POINTS = 900          # 15 minutes at the default 1 s interval
@@ -43,6 +44,13 @@ def _clamp(v, lo=0.0, hi=100.0):
 
 def _round(v, digits=1):
     return None if v is None else round(v, digits)
+
+
+def _app_name(exe: str | None) -> str | None:
+    """'Cyberpunk2077.exe' -> 'Cyberpunk2077'."""
+    if not exe:
+        return None
+    return exe[:-4] if exe.lower().endswith(".exe") else exe
 
 
 class SensorStats:
@@ -88,8 +96,15 @@ class SensorStats:
 
 
 class Collector:
-    def __init__(self, interval: float = 1.0) -> None:
+    def __init__(self, interval: float = 1.0, frames_on: bool = False) -> None:
         self.interval = max(0.25, float(interval))
+        # Frame rate: off unless asked for, so tests and one-off uses do not open a trace session.
+        self.frames = frames.FrameCounter()
+        self._frames_on = bool(frames_on)
+        self._fps_root: int | None = None        # process whose frame rate is shown
+        self._proc_info: dict[int, tuple[int, int, str]] = {}    # pid -> (parent, create time, name)
+        self._own_pid = os.getpid()
+        self._displays: list[dict] = []
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._seq = 0
@@ -145,9 +160,19 @@ class Collector:
         self.helper.stop()
         if self._thread:
             self._thread.join(timeout=3)
+        self.frames.stop()
 
     def set_interval(self, seconds: float) -> None:
         self.interval = max(0.25, min(10.0, float(seconds)))
+
+    def set_frames(self, on: bool) -> None:
+        """Switch frame rate reading on or off (the Settings switch)."""
+        self._frames_on = bool(on)
+        if on:
+            self.frames.start()
+        else:
+            self.frames.stop()
+            self._fps_root = None
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -282,6 +307,19 @@ class Collector:
         sources.append({"name": "SMBIOS firmware table", "ok": True,
                         "detail": "Motherboard, BIOS and memory-module details",
                         "provides": "System inventory"})
+
+        # Frame rate and monitors
+        if self._frames_on:
+            self.frames.start()
+        sources.append({"name": "Windows graphics event log", "ok": self.frames.available,
+                        "detail": "One event per frame a program presents, counted per program. Nothing is injected."
+                                  if self.frames.available else (self.frames.reason or "Not available"),
+                        "provides": "Frame rate (FPS)"})
+        self._read_displays()
+        sources.append({"name": "Windows display configuration", "ok": bool(self._displays),
+                        "detail": "Resolution, refresh rate, connection and colour mode of each monitor, "
+                                  "plus the monitor's own identification data",
+                        "provides": "Monitor details"})
         self._sources = sources
 
         # prime rate-based readers
@@ -358,6 +396,9 @@ class Collector:
         net = self._network(dt, slow)
         if proc_due:
             self._proc_rows = self._processes()
+        if slow and self._tick > 1:
+            self._read_displays()
+        fps = self._fps()
 
         cpu_w = cpu.get("power_w")
         gpu_w = [g.get("power_w") for g in gpus if g.get("power_w") is not None]
@@ -377,6 +418,8 @@ class Collector:
             "cpu": cpu, "gpus": gpus, "memory": mem, "drives": disks["drives"],
             "volumes": disks["volumes"], "network": net, "power": power,
             "battery": battery,
+            "fps": fps,
+            "displays": self._displays,
             "processes": self._proc_rows,
             "bridge": {"connected": bool(self._ext), "source": self._ext_source, "sensors": self._ext},
             "helper": helper_status,
@@ -730,6 +773,8 @@ class Collector:
         span = (now - prev_at) if prev_at else 0.0
         current: dict[int, tuple[int, int]] = {}
         groups: dict[str, dict] = {}
+        if procs:
+            self._proc_info = {p["pid"]: (p["parent"], p["create_time"], p["name"]) for p in procs}
         for p in procs:
             pid = p["pid"]
             current[pid] = (p["create_time"], p["cpu_100ns"])
@@ -760,6 +805,68 @@ class Collector:
             rows.append((score, g))
         rows.sort(key=lambda r: -r[0])
         return [g for _s, g in rows[:80]]
+
+    # ------------------------------------------------- frame rate, monitors
+    def _in_tree(self, pid: int, root: int) -> bool:
+        """True if ``pid`` is ``root`` or was started, directly or indirectly, by it."""
+        info = self._proc_info
+        for _ in range(32):
+            if pid == root:
+                return True
+            me = info.get(pid)
+            if me is None:
+                return False
+            parent = info.get(me[0])
+            if parent is None or parent[1] > me[1]:      # "parent" started later: a reused process id
+                return False
+            pid = me[0]
+        return False
+
+    def _fps(self) -> dict:
+        """Frame rate of the program the user is working in, plus who else is drawing.
+
+        A browser or a launcher often draws from a child process, so the whole
+        family of the foreground window's process counts. While RigWatch itself
+        is in front, the program used before it stays the one being watched.
+        """
+        out = {"enabled": self._frames_on, "available": self.frames.available, "reason": None,
+               "value": None, "app": None, "apps": []}
+        if not self._frames_on:
+            out["reason"] = "Frame rate reading is switched off in Settings."
+            return out
+        if not self.frames.available:
+            out["reason"] = self.frames.reason or "Frame rate reading is not available."
+            return out
+        rates = self.frames.rates()
+        info = self._proc_info
+
+        front = frames.foreground_pid()
+        if front and not self._in_tree(front, self._own_pid):
+            self._fps_root = front
+        root = self._fps_root
+        if root is not None and info and root not in info:
+            root = self._fps_root = None                 # that program has closed
+        if root is not None:
+            family = [fps for pid, fps in rates.items() if self._in_tree(pid, root)]
+            out["app"] = _app_name(info[root][2]) if root in info else None
+            out["value"] = round(max(family), 1) if family else None
+
+        drawing: dict[str, float] = {}
+        for pid, fps in rates.items():
+            if self._in_tree(pid, self._own_pid):
+                continue
+            name = _app_name(info[pid][2]) if pid in info else None
+            name = name or f"Process {pid}"
+            drawing[name] = max(drawing.get(name, 0.0), fps)
+        out["apps"] = [{"name": name, "fps": round(fps, 1)}
+                       for name, fps in sorted(drawing.items(), key=lambda kv: -kv[1])[:6]]
+        return out
+
+    def _read_displays(self) -> None:
+        try:
+            self._displays = displays.list_displays({a.luid_key: a.name for a in self._adapters})
+        except Exception:
+            pass                                         # keep the last good reading
 
     def _battery(self) -> dict | None:
         try:
@@ -889,6 +996,12 @@ class Collector:
             grp = f"Network · {a['name']}"
             add(f"{p}.rx", grp, "Download rate", a["rx_bps"] * 8 / 1e6, "Mbit/s", "rate", "Windows network statistics")
             add(f"{p}.tx", grp, "Upload rate", a["tx_bps"] * 8 / 1e6, "Mbit/s", "rate", "Windows network statistics")
+        if s["fps"]["enabled"]:
+            add("fps", "Display", "Frame rate of the program in use", s["fps"]["value"], "FPS", "rate",
+                "Windows graphics event log")
+        for d in s["displays"]:
+            add(f"display{d['index']}.refresh", "Display", f"Refresh rate · {d['name']}", d["refresh_hz"], "Hz",
+                "clock", "Windows display configuration")
         pw = s["power"]
         add("power.total", "Power", f"Measured draw ({pw['scope']})" if pw["scope"] else "Measured draw",
             pw["total_w"], "W", "power", "CPU energy meter + GPU telemetry")
@@ -907,6 +1020,7 @@ class Collector:
             "mem.pct": s["memory"]["pct"],
             "net.rx": s["network"]["rx_bps"], "net.tx": s["network"]["tx_bps"],
             "power.total": s["power"]["total_w"],
+            "fps": s["fps"]["value"],
         }
         for g in s["gpus"]:
             p = f"gpu{g['index']}"

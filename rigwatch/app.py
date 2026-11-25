@@ -16,6 +16,7 @@ from . import __version__
 from .collector import Collector
 from .server import DEFAULT_PORT, UI_DIR, start_server
 from .settings import Settings, data_dir
+from .startup import StartupEntry
 
 # Sizes in device-independent pixels. The window toolkit applies the display's DPI itself.
 WINDOW_SIZE = (1280, 860)
@@ -196,20 +197,61 @@ def _run_edge_app(url: str, server) -> bool:
         return True
 
 
-def _focus_running_instance(port: int) -> bool:
-    """If RigWatch is already open, bring that window forward instead of starting twice."""
-    import urllib.request
-    base = f"http://127.0.0.1:{port}"
+def _instance_file() -> Path:
+    """Where the open window notes its port, for the case that it is not the usual one."""
+    return data_dir() / "instance.json"
+
+
+def _note_instance(port: int) -> None:
     try:
-        with urllib.request.urlopen(f"{base}/api/ping", timeout=0.6) as resp:
-            if json.loads(resp.read()).get("app") != "rigwatch":
-                return False
-        req = urllib.request.Request(f"{base}/api/window", data=b'{"focus": true}',
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            return bool(json.loads(resp.read()).get("ok"))
-    except Exception:
-        return False
+        _instance_file().write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _forget_instance() -> None:
+    try:
+        path = _instance_file()
+        if json.loads(path.read_text(encoding="utf-8")).get("pid") == os.getpid():
+            path.unlink()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def _hand_over_to_running_instance(port: int, focus: bool = True) -> bool:
+    """True if a RigWatch window is already open, so this start should stop here.
+
+    With ``focus`` that window is brought forward. A start-up launch passes
+    ``focus=False``: a second sign-in launch must not pop the window up.
+
+    The open window is looked for on the usual port and on the port it noted
+    down, because it falls back to a free port when the usual one was taken.
+    """
+    import urllib.request
+    candidates = [port]
+    try:
+        noted = int(json.loads(_instance_file().read_text(encoding="utf-8")).get("port"))
+        if noted not in candidates:
+            candidates.append(noted)
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    for candidate in candidates:
+        base = f"http://127.0.0.1:{candidate}"
+        try:
+            with urllib.request.urlopen(f"{base}/api/ping", timeout=0.6) as resp:
+                info = json.loads(resp.read())
+            if info.get("app") != "rigwatch" or info.get("window") is False:
+                continue              # something else, or a RigWatch that runs without a window
+            if not focus:
+                return True
+            req = urllib.request.Request(f"{base}/api/window", data=b'{"focus": true}',
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if json.loads(resp.read()).get("ok"):
+                    return True
+        except Exception:
+            continue
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -224,12 +266,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"RigWatch {__version__}")
     args = parser.parse_args(argv)
 
-    if not (args.json or args.server or args.browser) and _focus_running_instance(args.port or DEFAULT_PORT):
+    windowed = not (args.json or args.server or args.browser)
+    if windowed and _hand_over_to_running_instance(args.port or DEFAULT_PORT, focus=not args.minimized):
         return 0
+    if windowed:
+        try:                          # RigWatch.exe was moved: keep "Start with Windows" pointing at it
+            StartupEntry().repair()
+        except Exception:
+            pass
 
     settings = Settings()
     interval = args.interval or settings.get()["interval"]
-    collector = Collector(interval)
+    collector = Collector(interval, frames_on=settings.get()["fps"])
     collector.start()
 
     if args.json:
@@ -248,6 +296,8 @@ def main(argv: list[str] | None = None) -> int:
     api = WindowApi()
     server = start_server(collector, settings, args.port, api)
     url = f"http://127.0.0.1:{server.server_address[1]}/"
+    if windowed:
+        _note_instance(server.server_address[1])
 
     try:
         if args.server:
@@ -264,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if windowed:
+            _forget_instance()
         collector.stop()
         server.shutdown()
     return 0

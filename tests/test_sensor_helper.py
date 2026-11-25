@@ -165,6 +165,24 @@ class ServiceTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_only_the_app_keeps_the_helper_alive(self):
+        # Another program polling the port must not keep an elevated process running.
+        service = helper.Service()
+        handler = type("Handler", (helper._Handler,), {"service": service})
+        server = helper._Server(("127.0.0.1", 0), handler)
+        port = server.server_address[1]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            service._last_request = 0.0
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/readings", timeout=2) as resp:
+                self.assertEqual(json.loads(resp.read())["app"], helper.APP_ID)     # answered...
+            self.assertEqual(service._last_request, 0.0)                            # ...but not counted
+            helper.fetch(port)
+            self.assertGreater(service._last_request, 0.0)
+        finally:
+            server.shutdown()
+            server.server_close()
+
 
 class TaskTests(unittest.TestCase):
     def test_task_runs_elevated_on_demand_only(self):

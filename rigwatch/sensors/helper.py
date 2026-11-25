@@ -33,6 +33,7 @@ from xml.sax.saxutils import escape
 APP_ID = "rigwatch-sensor-helper"
 PROTOCOL = 1
 PORTS = tuple(range(47116, 47121))
+CLIENT_HEADER = "X-Helper-Client"     # sent by RigWatch; marks a request that keeps the helper running
 TASK_NAME = "RigWatch Sensor Helper"
 ENGINE_DIR = Path(__file__).resolve().parents[1] / "vendor" / "lhm"
 ENGINE_DLL = "LibreHardwareMonitorLib.dll"
@@ -193,9 +194,12 @@ class Service:
         return {"app": APP_ID, "protocol": PROTOCOL, "state": state, "elevated": is_elevated(),
                 "driver": driver, "engine": engine, "error": error, "t": time.time(), "readings": readings}
 
-    def payload(self) -> dict:
+    def payload(self, from_app: bool = True) -> dict:
+        """Latest readings. Only RigWatch's own requests count as "still in use"; anything
+        else that happens to poll this port must not keep an elevated process alive."""
         with self._lock:
-            self._last_request = time.monotonic()
+            if from_app:
+                self._last_request = time.monotonic()
             return self._payload
 
     def stop(self) -> None:
@@ -264,7 +268,7 @@ class _Handler(BaseHTTPRequestHandler):
         if host not in ("127.0.0.1", "localhost") or self.headers.get("Origin"):
             return self._send(403, {"error": "forbidden"})          # local programs only, never a web page
         if self.path == "/v1/readings":
-            return self._send(200, self.service.payload())
+            return self._send(200, self.service.payload(self.headers.get(CLIENT_HEADER) == APP_ID))
         if self.path == "/v1/stop":
             self.service.stop()
             return self._send(200, {"app": APP_ID, "stopping": True})
@@ -280,7 +284,8 @@ def fetch(port: int, path: str = "/v1/readings", timeout: float = 0.5) -> dict |
     """Ask a helper on ``port``; ``None`` when nothing there answers as one."""
     import urllib.request
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=timeout) as resp:
+        request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={CLIENT_HEADER: APP_ID})
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
         return data if isinstance(data, dict) and data.get("app") == APP_ID else None
     except Exception:

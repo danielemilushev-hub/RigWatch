@@ -21,7 +21,8 @@ and explains why. It never fills the gap with an estimate.
 double-click it. No Python needed.
 
 **From source:** double-click **`RigWatch.bat`**. The first run creates a private Python environment
-(about a minute, needs Python 3.11+ and an internet connection); after that it opens straight away.
+(about a minute, needs Python 3.11+ and an internet connection) and fetches the sensor engine used for
+CPU temperature (about 3 MB); after that it opens straight away.
 
 Optional: run `tools\create-shortcut.ps1` to put a RigWatch shortcut on your desktop.
 
@@ -160,7 +161,8 @@ Layout:
 rigwatch/
   sensors/        one module per data source (pdh, dxgi, d3dkmt, adl, nvidia, storage, smbios, winsys, bridge)
                   helper.py is the elevated sensor helper (self-contained); helper_client.py is the app's side of it
-  vendor/lhm/     LibreHardwareMonitor's sensor engine and its licences (see tools/fetch-sensor-engine.py)
+  vendor/lhm/     LibreHardwareMonitor's sensor engine and its licences. Not kept in git: fetched from
+                  nuget.org by tools/fetch-sensor-engine.py (pinned SHA-512), bundled into the exe by the build
   collector.py    background sampler: snapshot, history, min/max, health alerts
   server.py       local HTTP API and static files
   app.py          window, mini mode, command line
@@ -175,6 +177,9 @@ Run the tests with `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
 
 Notes for anyone extending the sensor layer:
 
+- The sensor helper was run on an AMD Ryzen 5 7500F with an MSI B650 board (Nuvoton NCT6687D): CPU
+  temperature, board temperatures, fans and voltages all read correctly. Intel processors and other
+  board chips go through the same engine but have not been run here.
 - The NVIDIA and Intel paths follow the vendors' documented APIs but were built on an all-AMD machine
   and have not been run on that hardware yet.
 - On some Windows installs the classic performance counters (`\Memory`, `\PhysicalDisk`, …) fail when

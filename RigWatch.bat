@@ -23,4 +23,11 @@ if not exist ".venv\Scripts\pythonw.exe" (
   )
 )
 
+rem CPU temperature needs the sensor engine (about 3 MB, checked against pinned hashes).
+rem It is fetched once; RigWatch still starts without it and says the reading is unavailable.
+if not exist "rigwatch\vendor\lhm\LibreHardwareMonitorLib.dll" (
+  echo Fetching the sensor engine for CPU temperature...
+  ".venv\Scripts\python.exe" tools\fetch-sensor-engine.py >nul 2>nul
+)
+
 start "" ".venv\Scripts\pythonw.exe" -m rigwatch %*

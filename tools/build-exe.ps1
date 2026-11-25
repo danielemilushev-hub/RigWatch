@@ -12,6 +12,13 @@ if (-not (Test-Path $python)) {
 & $python -m pip install --disable-pip-version-check -q -r requirements-build.txt
 if ($LASTEXITCODE -ne 0) { throw "Could not install the build requirements." }
 
+# The sensor helper's engine (CPU temperature) is not kept in git; fetch it so the exe includes it.
+if (-not (Test-Path (Join-Path $root "rigwatch\vendor\lhm\LibreHardwareMonitorLib.dll"))) {
+    Write-Host "Fetching the sensor engine (CPU temperature)..."
+    & $python tools\fetch-sensor-engine.py
+    if ($LASTEXITCODE -ne 0) { throw "Could not fetch the sensor engine." }
+}
+
 & $python -m PyInstaller --noconfirm --clean --distpath dist --workpath build tools\rigwatch.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
 

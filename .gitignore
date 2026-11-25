@@ -1,10 +1,11 @@
-# per-machine settings, written on first run
-monitor_config.json
-
-# runtime noise
-_out.log
-_err.log
-__pycache__/
-*.py[cod]
-*.egg-info/
 .venv/
+.venv-build/
+__pycache__/
+*.pyc
+build/
+dist/
+art/renders/
+art/generated/
+legacy/
+.claude/
+rigwatch/vendor/

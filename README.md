@@ -1,223 +1,176 @@
 # RigWatch
 
-A single-file Windows dashboard for live CPU, RAM, per-GPU, per-disk and system-power readings.
-Pure Python and tkinter — `psutil` is the only dependency, the icons are embedded in the script, and
-there is nothing to install beyond Python itself.
+A hardware monitor for Windows that shows what your PC is actually doing: processor, graphics,
+memory, storage, network and power, with live charts, a full sensor table, a compact
+always-on-top view and live numbers on the taskbar.
+
+Everything on screen is **measured**. When a sensor cannot be read, RigWatch says "not available"
+and explains why. It never fills the gap with an estimate.
 
 ![RigWatch](docs/preview.png)
 
-*Screenshot taken in `--demo` mode, so the numbers are synthetic.*
+*The computer name and network addresses are hidden in these screenshots
+(Settings → Hide identifying details).*
 
-Built for a two-GPU AMD machine, because AMD has no `nvidia-smi` equivalent on Windows and most
-lightweight monitors either merge multiple GPUs into one figure or ignore the second card entirely.
-Nothing here is AMD-specific though: utilisation, VRAM and adapter names come from vendor-neutral
-WDDM interfaces, so AMD, NVIDIA and Intel cards all show up — separately, one card per panel.
+> **Version 2 is a complete rewrite.** The original single-file tkinter version is kept as
+> [`v1.0`](https://github.com/danielemilushev-hub/RigWatch/tree/v1.0).
 
-## Run it
+## Start it
 
+**Easiest:** download `RigWatch.exe` from the [latest release](https://github.com/danielemilushev-hub/RigWatch/releases/latest) and
+double-click it. No Python needed.
+
+**From source:** double-click **`RigWatch.bat`**. The first run creates a private Python environment
+(about a minute, needs Python 3.11+ and an internet connection); after that it opens straight away.
+
+Optional: run `tools\create-shortcut.ps1` to put a RigWatch shortcut on your desktop.
+
+### Standalone RigWatch.exe
+
+`RigWatch.exe` is a single file that runs on Windows 10/11 PCs **without Python installed**. Copy it
+anywhere and double-click it. It needs the Microsoft Edge WebView2 runtime, which is part of
+Windows 11 and present on almost every up-to-date Windows 10 PC.
+
+Build it yourself (the result lands in `dist\`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-exe.ps1
 ```
-pip install psutil
-python hw_monitor.py
+
+The exe is not code-signed, so on another PC Windows SmartScreen may show "Windows protected your PC"
+the first time (More info → Run anyway), and some antivirus tools are suspicious of unsigned
+single-file apps. Signing it with a code-signing certificate removes both.
+
+The command-line flags below work with the exe too (`RigWatch.exe --json`, `RigWatch.exe --server`, …).
+
+From a terminal:
+
+```powershell
+.\.venv\Scripts\python.exe -m rigwatch            # the app window
+.\.venv\Scripts\python.exe -m rigwatch --browser  # open in your browser instead
+.\.venv\Scripts\python.exe -m rigwatch --server   # only the local service (http://127.0.0.1:47115)
+.\.venv\Scripts\python.exe -m rigwatch --json     # print one reading as JSON and exit
+.\.venv\Scripts\python.exe -m rigwatch --minimized  # start minimised, showing only the taskbar strip
 ```
 
-Or double-click `run_monitor.bat`, which installs `psutil` on first run.
+## What you get
 
-| Flag | |
-| --- | --- |
-| `--demo` | synthetic data; runs on any OS, useful for seeing the layout |
-| `--debug` | prints discovered adapters, disks and raw counter instances each second |
-| `--psu 850` | power-supply rating for this run |
-| `--scale 1.25` | force a UI scale factor if DPI detection guesses wrong |
+| View | Shows |
+|---|---|
+| Overview | Health verdict, one card per component, all temperatures, busiest apps |
+| Processor | Utilisation, clock, measured package power, load per thread, clock and power per core |
+| Graphics | Utilisation, temperature, hotspot, measured board power, fan, video memory, clocks, voltage, workload by engine, apps using the card |
+| Memory | In use, available, committed, cache, kernel pools, largest apps, installed modules |
+| Storage | Per drive: temperature, health (rated life left), activity, read/write speed, lifetime totals, volumes |
+| Network | Download/upload on the default route, session and startup totals, every active adapter |
+| Apps | All apps with processor, memory, graphics and video-memory use; sortable and filterable |
+| All sensors | Every reading with min / max / average, CSV export, and where each number comes from |
+| Mini | Compact always-on-top panel for gaming or working full-screen |
 
-| Key | |
-| --- | --- |
-| `S` | settings (PSU rating, baseline power, sensor bridge URL) |
-| `M` | send the window to the taskbar strip |
-| `T` | keep on top |
-| `Esc` | quit |
+Dark and light themes, °C or °F, refresh rate from twice a second to every 5 seconds, and a switch
+that hides the computer name and network addresses for screenshots and streaming.
 
-## What it shows
+![Graphics page](docs/graphics.png)
 
-| Card | Contents |
-| --- | --- |
-| CPU | utilisation ring, 60-second history, one bar per logical core, package watts and temperature, clock, uptime |
-| Memory | usage ring, 60-second history, used / total / free, swap |
-| Each GPU | utilisation ring, 60-second history, watts and temperature, VRAM bar, shared memory, busiest engine, live/no-data badge |
-| Storage | per physical disk: model, bus type, volumes, capacity bar, live read/write, I/O history |
-| System power | total draw as a stacked bar against your PSU rating, with headroom |
+### Minimised: numbers on the taskbar
 
-Every GPU gets its own labelled card and its own colour — nothing is merged or summed across cards.
-Gauges turn amber past 90% and red past 97%.
-
-**Resizing.** Drag the window to anything from roughly 620×600 upwards and the whole dashboard
-scales: fonts, gauges, graphs, padding and icons (embedded at six sizes, nearest one picked). Below
-about 85% it sheds detail — per-core bars first, then the disk I/O plots — to stay readable. The
-60-second histories survive the resize.
-
-**Minimised.** Minimise and a compact strip appears on the taskbar showing CPU, RAM, every GPU and
-total watts. Click it to restore, drag it anywhere (the position is remembered), right-click for a
-menu. Windows 11 removed the deskband API, so nothing can add a real item *inside* the taskbar any
-more; this is a borderless always-on-top strip sized to the taskbar and parked next to it, which is
-as close as third-party code can get.
+Minimise the window and a compact strip appears on the taskbar, next to the weather widget, showing
+processor load, memory, each graphics card's load and temperature, and measured watts. Click it to
+bring the window back, drag it anywhere (the position is remembered), right-click for a menu.
+Turn it off under Settings → Taskbar strip.
 
 ![Taskbar strip](docs/taskbar-strip.png)
 
+Windows 11 removed the deskband API, so nothing can add a real item *inside* the taskbar any more.
+This is a borderless always-on-top strip sized to the taskbar and parked on it, which is as close as
+third-party code can get. It never takes keyboard focus.
+
 ## Where the numbers come from
 
-**CPU, RAM, disk throughput and capacity** — `psutil`.
+No administrator rights and no kernel driver are needed for any of this. RigWatch never runs elevated.
 
-**GPU utilisation and VRAM** — the WDDM performance counters, read through PDH (`pdh.dll`) with
-ctypes. These are the same counters Task Manager uses, so they work for any vendor:
+| Reading | Source |
+|---|---|
+| CPU utilisation and clock per thread | Windows performance counters (`Processor Information`), the same figures Task Manager uses |
+| CPU package and per-core power | The processor's own energy counters (RAPL) via the Windows `Energy Meter` counters |
+| GPU utilisation, video memory, per-app GPU use | Windows performance counters (`GPU Engine`, `GPU Adapter Memory`, `GPU Process Memory`) |
+| GPU identity and real video-memory size | DXGI |
+| Radeon temperature, hotspot, fan, clocks, voltage, board power | AMD ADL, loaded from the active driver's own folder |
+| GeForce temperature, fan, clocks, power | NVIDIA NVML |
+| GPU temperature on any other card | Windows display kernel (`D3DKMT`), the reading Task Manager shows |
+| Drive temperature, wear, power-on hours, data written | Queried from each drive (`IOCTL_STORAGE_QUERY_PROPERTY`, NVMe health log) |
+| Drive activity and speed | Windows disk statistics (`IOCTL_DISK_PERFORMANCE`) |
+| Memory, network, processes | Windows, via `psutil` and `GetPerformanceInfo` |
+| Motherboard, BIOS, memory modules | SMBIOS firmware table |
 
-| Counter | Used for |
-| --- | --- |
-| `\GPU Engine(*)\Utilization Percentage` | per-adapter utilisation |
-| `\GPU Adapter Memory(*)\Dedicated Usage` | VRAM in use |
-| `\GPU Adapter Memory(*)\Shared Usage` | shared system memory |
+### CPU temperature, case fans and voltages
 
-Instance names look like `pid_1234_luid_0x00000000_0x0054E10A_phys_0_eng_0_engtype_3D`, so
-utilisation is summed across every process per engine and the busiest engine on an adapter becomes
-that adapter's number — the same aggregation Task Manager displays. The engine type driving it
-(`3D`, `Compute`, `Copy`, `VideoDecode`, …) is shown beside the VRAM figure.
+Not in version 2.0. Windows keeps these sensors behind administrator rights, which is why Task
+Manager shows neither. Built-in support is in progress; until then RigWatch says "not available"
+rather than guessing.
 
-**GPU names and total VRAM** — those counters identify adapters only by LUID, so names and sizes come
-from **D3DKMT** (`gdi32`: `D3DKMTEnumAdapters2` + `D3DKMTQueryAdapterInfo`). It shares the LUID
-namespace with the counters, so the mapping is exact rather than guessed. DXGI is kept as a fallback;
-it is not the primary path because `CreateDXGIFactory1` returns `E_NOINTERFACE` on some machines,
-including the one this was built on.
+If [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) happens to be
+running with **Options → Remote Web Server → Run**, its readings are picked up automatically.
 
-**Disk models, bus type and volume mapping** — the storage IOCTLs:
-`IOCTL_STORAGE_QUERY_PROPERTY` on `\\.\PhysicalDriveN` for model and bus (NVMe / USB / SATA), and
-`IOCTL_STORAGE_GET_DEVICE_NUMBER` on `\\.\C:` to find which physical disk a volume lives on. Both
-open the device with zero access rights, so neither needs elevation.
+### Not included
 
-**Memory stick count** — parsed from the firmware's SMBIOS table via
-`GetSystemFirmwareTable('RSMB')`, type 17 records, so the RAM figure in the power estimate matches
-the machine rather than assuming a number.
+- Frame rate (FPS): reading it reliably needs administrator rights or injecting into games.
+- Whole-system power at the wall: only the CPU package and the graphics card report measured draw.
 
-**CPU package power** — `\Energy Meter(*)\Power` exposes the CPU's RAPL rails in milliwatts and is
-readable without elevation. This is a real measurement, and the UI labels it as such. RAPL exists on
-both AMD and Intel.
+## For developers
 
-**GPU temperature** — `D3DKMT_ADAPTER_PERFDATA`, query type 62 of `D3DKMTQueryAdapterInfo`. Windows
-exposes this to user mode, so GPU die temperature is readable on **any vendor** with no driver, no
-vendor library and no elevation. The struct layout was confirmed empirically rather than trusted:
-at offset 8 the memory clock matches what Radeon Software reports to the megahertz, and offset 56 is
-temperature in deci-Celsius, which read 57.0 °C against Adrenalin's 58 °C and tracked a second card
-cooling from 56 °C to 47 °C as it idled. The decode is sanity-gated to 0–150 °C, so on a Windows
-build that lays the struct out differently the field simply reads `N/A` instead of showing nonsense.
+The service listens on this computer only (`127.0.0.1:47115`; a free port is used if that one is taken).
 
-**NVIDIA GPU power and temperature** — `nvml.dll` ships with every NVIDIA driver (it is the library
-behind `nvidia-smi`), so on an NVIDIA card watts are read directly too, with no extra software and
-no kernel driver. Devices are matched to adapters by PCI bus/device, falling back to name. If
-`nvml.dll` is absent the whole path is a silent no-op.
+| Endpoint | Returns |
+|---|---|
+| `GET /api/snapshot` | Latest reading of every sensor |
+| `GET /api/static` | Hardware inventory and the status of each data source |
+| `GET /api/history` | Up to 15 minutes of history for the charted series |
+| `GET /api/sensors` | Flat sensor list with min / max / average |
+| `GET /api/stream` | Server-sent events, one snapshot per sample |
+| `GET /api/sensors.csv`, `/api/history.csv` | CSV exports |
 
-## GPU support by vendor
+Layout:
 
-| | AMD | NVIDIA | Intel |
-| --- | --- | --- | --- |
-| Utilisation, VRAM, engine type | yes | yes | yes |
-| Card name, total VRAM | yes | yes | yes |
-| **GPU temperature**, no extra software | **yes**, via D3DKMT | **yes** | **yes**, via D3DKMT |
-| GPU power, no extra software | no — estimated | **yes**, via NVML | no — estimated |
-| GPU power with LibreHardwareMonitor running | yes | yes | yes |
-| CPU package power | yes, RAPL | yes, RAPL | yes, RAPL |
-| CPU temperature | needs LibreHardwareMonitor | needs LHM | needs LHM |
-| Board-power figure for the estimate | RX 5000–9000 | GTX 16 / RTX 20–50 | Arc A- and B-series |
-
-Integrated graphics are recognised by name and by having little or no dedicated VRAM, and are given
-a small power profile instead of a discrete-card default.
-
-## About power, honestly
-
-Temperature is solved — see D3DKMT above. **Power** is the part that is not. On NVIDIA, NVML gives
-it. On **AMD** there is no unprivileged route to board power at all. Every one was tried and
-refused:
-
-| Route | Result |
-| --- | --- |
-| `ADL2_Adapter_PMLog_Support_Get` / `PMLog_Start` | `ADL_ERR_INVALID_ADL_IDX` for every adapter index |
-| `ADL2_Overdrive6_CurrentPower_Get`, `Overdrive_Caps` | `ADL_ERR_INVALID_ADL_IDX` |
-| ADLX (`amdadlx64.dll`) `ADLXInitialize` | initialises correctly — `TotalSystemRAM` returns the right value, so the ctypes binding is sound — but `GetGPUs` returns an empty list |
-| ADLX `ADLXInitializeWithCallerAdl` with a live ADL context | initialises, then access-violates inside `GetGPUs` |
-| `D3DKMTQueryAdapterInfo` perf-data types | nothing with a usable power field |
-
-Most sensors are not "already reported to Windows" waiting to be picked up. CPU package temperature
-sits behind model-specific registers and the power-management mailbox, board temperatures and fan
-tachometers behind the Super I/O chip's I/O ports, DIMM telemetry behind SMBus, and AMD GPU board
-power behind the display driver. All of those are ring-0, which is why HWMonitor, HWiNFO,
-LibreHardwareMonitor, MSI Center and Adrenalin each ship a kernel driver.
-
-But the subset Windows *does* publish to user mode is bigger than it first appears, and this app
-reads all of it: RAPL energy, the WDDM GPU counters, SMART, SMBIOS, the storage IOCTLs — and
-`D3DKMT_ADAPTER_PERFDATA`, which is where GPU temperature turned out to be hiding.
-
-### Optional: LibreHardwareMonitor bridge
-
-[LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) is free, open
-source, ships that driver, and — unlike MSI Center or the free build of CPUID HWMonitor — publishes
-everything it reads over a local HTTP endpoint. Turn on **Options → Remote Web Server → Run** and
-this app picks it up on the next sample: GPU watts and both CPU and GPU temperatures switch from
-modelled to measured, and the System power card says so. Nothing to configure. If it is not running,
-the app falls back quietly and retries every 20 seconds.
-
-Without it, GPU wattage is modelled from utilisation against the card's board power:
-`idle + (TBP - idle) × (util/100)^0.85`, always labelled *estimated*. It is a load curve, not a
-sensor — compute workloads in particular can sit at 100% utilisation while drawing well under TBP.
-
-### The PSU figure
-
-**A power supply cannot be detected.** It has no data link to the motherboard; nothing anywhere
-reports its rating or its output. The exceptions are "digital" units with a USB header — Corsair
-HXi/RMi/AXi, NZXT C-series and a few others — which enumerate as USB devices and report real
-wattage. Everything else is electrically a dumb box.
-
-So the PSU rating is yours to enter: press **S**, or click the System power card. The same dialog
-holds the parts no sensor reports at all — motherboard, RAM, fans, drives, USB — itemised rather
-than hidden in one lump, and printed under the bar so you can see what is being assumed:
-
-```json
-"baseline_items": {
-  "motherboard": 35,   "ram_per_stick": 3, "ram_sticks": 4,
-  "fans": 10,          "per_drive": 4,     "usb_peripherals": 10
-}
+```
+rigwatch/
+  sensors/        one module per data source (pdh, dxgi, d3dkmt, adl, nvidia, storage, smbios, winsys, bridge)
+  collector.py    background sampler: snapshot, history, min/max, health alerts
+  server.py       local HTTP API and static files
+  app.py          window, mini mode, command line
+  strip.py        the taskbar strip shown while minimised
+  ui/             the interface (plain HTML, CSS and ES modules; no build step)
+tools/            build-exe.ps1 + rigwatch.spec (standalone exe), create-shortcut.ps1
+art/              Blender scripts that build and export the 3D illustrations
+tests/            python -m unittest discover -s tests
 ```
 
-`ram_sticks` is filled in from SMBIOS automatically. To calibrate the rest: read a wall meter,
-divide by PSU efficiency (~0.90), and adjust until the total lines up. The System power total is an
-estimate with a measured core, not a measurement — the card is explicit about which parts are which.
+Run the tests with `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`.
 
-## Failure handling
+Notes for anyone extending the sensor layer:
 
-Every reading is independent. If a query fails, returns nothing, or a LUID can't be matched, that
-reading alone shows `N/A`, the card's badge flips to "no data", and everything else keeps updating.
-If the GPU counter query stops producing data for ~10 samples the PDH query is rebuilt (this covers
-driver restarts). The sampler thread cannot die — a bad value in the config costs you the power
-readout, not the app — and the UI refresh loop always re-arms itself.
+- The NVIDIA and Intel paths follow the vendors' documented APIs but were built on an all-AMD machine
+  and have not been run on that hardware yet.
+- On some Windows installs the classic performance counters (`\Memory`, `\PhysicalDisk`, …) fail when
+  opened from Python (`psutil.swap_memory()` raises too). RigWatch only uses the newer counter sets and
+  direct Win32 calls, so it is unaffected; avoid adding dependencies on the classic ones.
+- AMD's `atiadlxx.dll` in `System32` can belong to a different driver package than the one running
+  the card. `sensors/adl.py` loads the copy from the active driver's folder first for that reason.
 
-`debug_counters.bat` (or `--debug`) prints what was discovered, how, and the raw counter instances,
-which is the fastest way to see why something reads `N/A`.
+## Artwork
+
+- 3D hardware illustrations and the app icon are modelled and rendered in Blender:
+  `art/blender/build_assets.py` → `art/export_assets.py` → `art/finalize_assets.py`.
+- Backdrop photography (`rigwatch/ui/assets/bg`) was generated with cyberninjas.
 
 ## Tested on
 
-Windows 11, Python 3.14, Ryzen 5 7500F, Radeon RX 7800 XT + RX 6650 XT, MSI B650 board.
-Python 3.9+ should work.
+Windows 11, Python 3.14, Ryzen 5 7500F, Radeon RX 7800 XT, MSI B650 board.
 
-**Only AMD hardware has actually been exercised.** The NVIDIA and Intel paths are built on
-vendor-neutral interfaces (WDDM counters, D3DKMT) plus NVIDIA's own NVML, and every one of them
-degrades to `N/A` rather than failing if something is missing — but they are untested on real
-hardware. If you run this on an NVIDIA or Intel card, an issue saying what worked and what didn't
-would be genuinely useful. `--debug` output is the most helpful thing to attach.
-
-## Files
-
-| File | |
-| --- | --- |
-| `hw_monitor.py` | the whole app, including the embedded icon assets |
-| `run_monitor.bat` | launcher; installs `psutil` if needed |
-| `debug_counters.bat` | runs with `--debug` and keeps the console open |
-| `make_icons.py` | regenerates the embedded icon set (needs Pillow; only if you want to change the icons) |
-| `monitor_config.json` | written on first run next to the script; git-ignored, since it is per-machine |
+**Only AMD hardware has actually been exercised.** The NVIDIA and Intel paths use the vendors'
+documented interfaces and degrade to "not available" rather than failing, but they are untested on
+real hardware. If you run this on an NVIDIA or Intel card, an issue saying what worked and what
+didn't would be genuinely useful; the output of `RigWatch.exe --json` is the most helpful thing to attach.
 
 ## Licence
 

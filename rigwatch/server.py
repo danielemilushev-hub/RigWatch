@@ -88,6 +88,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(c.sensors())
             if path == "/api/settings":
                 return self._json(self.server.settings.get())
+            if path == "/api/helper":
+                return self._json(c.helper.status())
             if path == "/api/ping":
                 return self._json({"app": "rigwatch", "version": __version__,
                                    "clients": self.server.stream_clients})
@@ -190,6 +192,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sensors/reset":
             self.server.collector.reset_stats()
             return self._json({"ok": True})
+        if path == "/api/helper/enable":      # shows one Windows permission prompt; returns once it is answered
+            return self._json(self.server.collector.helper.enable())
+        if path == "/api/helper/disable":
+            return self._json(self.server.collector.helper.disable())
         if path == "/api/window":
             api = self.server.window_api
             if api is None:

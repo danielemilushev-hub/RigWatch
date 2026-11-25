@@ -33,7 +33,10 @@ with open(version_file, "w", encoding="utf-8") as fh:
 a = Analysis(
     [os.path.join(ROOT, "tools", "rigwatch_entry.py")],
     pathex=[ROOT],
-    datas=[(os.path.join(ROOT, "rigwatch", "ui"), os.path.join("rigwatch", "ui"))],
+    datas=[(os.path.join(ROOT, "rigwatch", "ui"), os.path.join("rigwatch", "ui"))]
+          # The sensor helper's engine (CPU temperature); present after tools/fetch-sensor-engine.py has run.
+          + ([(os.path.join(ROOT, "rigwatch", "vendor"), os.path.join("rigwatch", "vendor"))]
+             if os.path.isdir(os.path.join(ROOT, "rigwatch", "vendor", "lhm")) else []),
     hiddenimports=["pynvml"],
     excludes=["tkinter", "unittest", "pydoc_data", "test"],
     noarchive=False,

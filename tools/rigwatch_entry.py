@@ -20,6 +20,11 @@ def _attach_console() -> None:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["--sensor-helper"]:
+        # The elevated sensor helper shares this executable. It is dispatched before
+        # anything else is imported, so the app itself never runs with those rights.
+        from rigwatch.sensors import helper
+        return helper.main(sys.argv[2:])
     _attach_console()
     try:
         from rigwatch.app import main as run

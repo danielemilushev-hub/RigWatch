@@ -19,7 +19,7 @@ import psutil
 
 from . import __version__
 from .sensors import adl as adl_mod
-from .sensors import bridge, d3dkmt, dxgi, nvidia, smbios, storage, winsys
+from .sensors import bridge, d3dkmt, dxgi, helper_client, nvidia, smbios, storage, winsys
 from .sensors.pdh import PdhQuery
 
 HISTORY_POINTS = 900          # 15 minutes at the default 1 s interval
@@ -109,6 +109,11 @@ class Collector:
         self._nvml: nvidia.Nvml | None = None
         self._gpu_vendor_dev: dict[int, tuple[str, object]] = {}
         self._bridge = bridge.LhmBridge()
+        # Sensors Windows keeps behind administrator rights (CPU temperature, fans,
+        # voltages): from RigWatch' own helper when it is on, else a running LibreHardwareMonitor.
+        self.helper = helper_client.HelperClient()
+        self._ext: list[dict] = []
+        self._ext_source: str | None = None
         self._drives: list[dict] = []
         self._drive_health: dict[int, dict] = {}
         self._disk_prev: dict[int, dict] = {}
@@ -131,11 +136,13 @@ class Collector:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
+        self.helper.start()
         self._thread = threading.Thread(target=self._run, name="rigwatch-sampler", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self.helper.stop()
         if self._thread:
             self._thread.join(timeout=3)
 
@@ -335,8 +342,16 @@ class Collector:
         if self._pdh:
             self._pdh.collect()
         self._bridge.poll()
+        helper_rows = self.helper.readings()
+        if helper_rows:
+            self._ext, self._ext_source = helper_rows, "Sensor helper"
+        elif self._bridge.connected:
+            self._ext, self._ext_source = self._bridge.readings, "LibreHardwareMonitor"
+        else:
+            self._ext, self._ext_source = [], None
+        helper_status = self.helper.status()
 
-        cpu = self._cpu()
+        cpu = self._cpu(helper_status)
         gpus = self._gpus()
         mem = self._memory()
         disks = self._storage(dt, slow)
@@ -363,8 +378,8 @@ class Collector:
             "volumes": disks["volumes"], "network": net, "power": power,
             "battery": battery,
             "processes": self._proc_rows,
-            "bridge": {"connected": self._bridge.connected,
-                       "sensors": self._bridge.readings if self._bridge.connected else []},
+            "bridge": {"connected": bool(self._ext), "source": self._ext_source, "sensors": self._ext},
+            "helper": helper_status,
         }
         snap["alerts"] = self._alerts(snap)
         snap["status"] = ("critical" if any(a["level"] == "critical" for a in snap["alerts"]) else
@@ -380,7 +395,7 @@ class Collector:
             self._cond.notify_all()
 
     # ------------------------------------------------------------------ CPU
-    def _cpu(self) -> dict:
+    def _cpu(self, helper_status: dict | None = None) -> dict:
         q = self._pdh
         per_thread: list[float] = []
         total = None
@@ -432,20 +447,29 @@ class Collector:
                         cores.append((int(m.group(1)), v / 1000.0))
             core_power = [round(v, 2) for _i, v in sorted(cores)]
 
+        # The processor's own sensor first; a firmware thermal zone only when that is out of reach.
         temp_c, temp_source, temp_reason = None, None, None
-        if q and q.has("tz"):
+        if self._ext:
+            t = bridge.cpu_temperature(self._ext)
+            if t is not None:
+                temp_c = t
+                temp_source = ("Processor thermal sensor" if self._ext_source == "Sensor helper"
+                               else self._ext_source)
+        if temp_c is None and q and q.has("tz"):
             zones = [v / 10.0 - 273.15 for v in q.array("tz").values() if v > 0]
             zones = [z for z in zones if 0 < z < 130]
             if zones:
                 temp_c, temp_source = max(zones), "ACPI thermal zone"
-        if temp_c is None and self._bridge.connected:
-            t = bridge.cpu_temperature(self._bridge.readings)
-            if t is not None:
-                temp_c, temp_source = t, "LibreHardwareMonitor"
         if temp_c is None:
-            temp_reason = ("Windows keeps the processor's temperature sensor behind administrator "
-                           "rights, and this version of RigWatch does not read it yet. "
-                           "Built-in support is in progress.")
+            state = (helper_status or {}).get("state", "off")
+            if state == "on":
+                temp_reason = ("The sensor helper is running, but its engine found no temperature "
+                               "sensor it recognises on this processor.")
+            elif state == "off":
+                temp_reason = ("Windows keeps the processor’s temperature sensor behind administrator "
+                               "rights. Turn on the sensor helper and RigWatch reads it directly.")
+            else:
+                temp_reason = (helper_status or {}).get("message") or "The sensor helper is not ready yet."
 
         perf = winsys.performance_info() or {}
         return {
@@ -868,9 +892,11 @@ class Collector:
         pw = s["power"]
         add("power.total", "Power", f"Measured draw ({pw['scope']})" if pw["scope"] else "Measured draw",
             pw["total_w"], "W", "power", "CPU energy meter + GPU telemetry")
-        for i, r in enumerate(s["bridge"]["sensors"]):
-            add(f"lhm.{r['hardware']}.{r['kind']}.{r['label']}", f"{r['hardware']} (LibreHardwareMonitor)",
-                r["label"], r["value"], r["unit"], r["kind"], "LibreHardwareMonitor")
+        ext_source = s["bridge"].get("source") or "LibreHardwareMonitor"
+        tag = "sensor helper" if ext_source == "Sensor helper" else ext_source
+        for r in s["bridge"]["sensors"]:
+            sid = r.get("id") or f"{r['hardware']}.{r['kind']}.{r['label']}"
+            add(f"lhm.{sid}", f"{r['hardware']} ({tag})", r["label"], r["value"], r["unit"], r["kind"], ext_source)
         return rows
 
     # -------------------------------------------------------------- history

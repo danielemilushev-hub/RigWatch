@@ -87,7 +87,8 @@ third-party code can get. It never takes keyboard focus.
 
 ## Where the numbers come from
 
-No administrator rights and no kernel driver are needed for any of this. RigWatch never runs elevated.
+No administrator rights and no kernel driver are needed for anything in this table. CPU temperature,
+case fans and voltages are the exception, covered below.
 
 | Reading | Source |
 |---|---|
@@ -105,12 +106,34 @@ No administrator rights and no kernel driver are needed for any of this. RigWatc
 
 ### CPU temperature, case fans and voltages
 
-Not in version 2.0. Windows keeps these sensors behind administrator rights, which is why Task
-Manager shows neither. Built-in support is in progress; until then RigWatch says "not available"
-rather than guessing.
+Windows keeps these behind administrator rights. The processor's thermal sensor and the motherboard's
+sensor chip can only be reached through a kernel driver, which is why Task Manager shows neither, and
+why every monitor that does show them (LibreHardwareMonitor, HWMonitor, HWiNFO) runs elevated.
 
-If [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) happens to be
-running with **Options → Remote Web Server → Run**, its readings are picked up automatically.
+RigWatch reads them with a small **sensor helper**. Turn it on under **Settings → Sensors**, or from the
+"not available" link next to the processor temperature.
+
+- Turning it on shows one Windows permission prompt. That registers an on-demand scheduled task,
+  "RigWatch Sensor Helper". Nothing is added to Windows start-up.
+- After that RigWatch starts the helper when it opens, without a prompt, and the helper exits about
+  25 seconds after RigWatch closes. RigWatch itself never runs elevated.
+- The helper only reads. It uses LibreHardwareMonitor's sensor engine (`rigwatch/vendor/lhm`, MPL-2.0)
+  through the [PawnIO](https://pawnio.eu) driver, the same pair LibreHardwareMonitor and FanControl use.
+- PawnIO is a separate, free install. RigWatch does not install a driver for you; it tells you when
+  PawnIO is missing and picks it up as soon as it is there.
+- A read that fails is dropped. It is never shown as 0.
+- Turning the helper off removes the scheduled task again.
+
+Two things to know before turning it on:
+
+- The helper runs with administrator rights from the folder RigWatch is in. Anything able to change the
+  files in that folder could use it to gain those rights, so keep RigWatch somewhere only you (or only
+  administrators) can write to.
+- If an online game's anti-cheat objects to the PawnIO driver, turn the helper off or uninstall PawnIO.
+
+A running [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) with
+**Options → Remote Web Server → Run** is still picked up automatically (`127.0.0.1:8085`) while the
+helper is off.
 
 ### Not included
 
@@ -129,12 +152,15 @@ The service listens on this computer only (`127.0.0.1:47115`; a free port is use
 | `GET /api/sensors` | Flat sensor list with min / max / average |
 | `GET /api/stream` | Server-sent events, one snapshot per sample |
 | `GET /api/sensors.csv`, `/api/history.csv` | CSV exports |
+| `GET /api/helper` | State of the sensor helper (off, starting, on, driver missing, …) |
 
 Layout:
 
 ```
 rigwatch/
   sensors/        one module per data source (pdh, dxgi, d3dkmt, adl, nvidia, storage, smbios, winsys, bridge)
+                  helper.py is the elevated sensor helper (self-contained); helper_client.py is the app's side of it
+  vendor/lhm/     LibreHardwareMonitor's sensor engine and its licences (see tools/fetch-sensor-engine.py)
   collector.py    background sampler: snapshot, history, min/max, health alerts
   server.py       local HTTP API and static files
   app.py          window, mini mode, command line

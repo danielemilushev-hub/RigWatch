@@ -5,6 +5,7 @@
 import { h, setText, fmt, DASH, icon, chip, setChip, meter, tile, card, facts, art, showDialog,
          tempTone, loadTone, prefs, ident } from './ui.js';
 import { TimeChart, drawSpark } from './chart.js';
+import { cpuTempDialog, helperSetting, helperSummary, HELPER_SOURCE } from './helper.js';
 
 const GB = 1024 ** 3;
 const tail = (arr, n) => (arr ? arr.slice(Math.max(0, arr.length - n)) : []);
@@ -23,14 +24,9 @@ function stat(label) {
   return el;
 }
 
-function whyNoCpuTemp(reason) {
-  showDialog('CPU temperature is not available', [
-    h('p', reason || 'Windows does not expose the processor temperature on this system.'),
-    h('p', 'Everything RigWatch shows is measured, so it will not display an estimate in its place.'),
-    h('p', 'If LibreHardwareMonitor is already running on this PC with its Remote Web Server on, ',
-      'RigWatch picks up its temperature, fan and voltage readings automatically.'),
-  ]);
-}
+// Explains why the reading is missing and offers to switch the sensor helper on.
+function whyNoCpuTemp() { cpuTempDialog(); }
+const tempFrom = source => (source === HELPER_SOURCE ? 'Read from the processor’s own sensor' : `From ${source}`);
 
 function chartCard(title, opts, note) {
   const host = h('div');
@@ -240,7 +236,7 @@ function overview(ctx) {
     // temperatures
     const rows = [];
     rows.push(tempRow('Processor', s.cpu.temp_c, 'cpu',
-      h('button.linkbtn', { type: 'button', onclick: () => whyNoCpuTemp(s.cpu.temp_reason) }, 'Not available — why?')));
+      h('button.linkbtn', { type: 'button', onclick: () => whyNoCpuTemp(s.cpu.temp_reason) }, 'Not available — turn it on')));
     for (const g of s.gpus) {
       const nm = s.gpus.length > 1 ? shortGpu(g.name) : 'Graphics card';
       rows.push(tempRow(nm, g.temp_c, 'gpu'));
@@ -288,6 +284,10 @@ function cpu(ctx) {
     'Measured by the processor’s own energy counters (RAPL).');
   const cClock = chartCard('Clock speed', { series: [{ key: 'cpu.freq', label: 'Average clock', color: '--c-cpu' }], format: fmt.clock, tick: v => (v / 1000).toFixed(1) + ' GHz', floor: 1000 },
     'Average effective frequency across all threads.');
+  // Shown once a temperature has been read (needs the sensor helper on most desktops).
+  const cTemp = chartCard('Temperature', { series: [{ key: 'cpu.temp', label: 'Temperature', color: '--c-cpu' }],
+    format: v => fmt.temp(v), tick: v => fmt.int(fmt.tempValue(v)) + '°', floor: 80 });
+  cTemp.hidden = true;
 
   // per-thread bars
   const bars = h('div.bars', { role: 'img', 'aria-label': 'Utilisation per thread' });
@@ -307,7 +307,7 @@ function cpu(ctx) {
     h('p.card-note', perCore > 1 ? `Each group of ${perCore} bars is one physical core.` : 'One bar per thread.'));
   const coresCard = card('Cores', h('div.table-wrap', coreTable));
 
-  const el = h('div.page', head, tiles, cUtil, h('div.grid.two', cPower, cClock), h('div.grid.two', threadsCard, coresCard));
+  const el = h('div.page', head, tiles, cUtil, cTemp, h('div.grid.two', cPower, cClock), h('div.grid.two', threadsCard, coresCard));
 
   function update(s) {
     const d = s.cpu;
@@ -318,13 +318,15 @@ function cpu(ctx) {
       if (!tTemp.dataset.na) {
         tTemp.dataset.na = '1';
         tTemp.value.replaceChildren(h('span.na', 'Not available'));
-        tTemp.sub.replaceChildren(h('button.linkbtn', { type: 'button', onclick: () => whyNoCpuTemp(d.temp_reason) }, 'Why?'));
+        tTemp.sub.replaceChildren(h('button.linkbtn', { type: 'button', onclick: () => whyNoCpuTemp(d.temp_reason) }, 'Why, and how to turn it on'));
+        setChip(tTemp.status, null);
       }
     } else {
       delete tTemp.dataset.na;
-      tTemp.set(fmt.temp(d.temp_c), `From ${d.temp_source}`);
+      tTemp.set(fmt.temp(d.temp_c), tempFrom(d.temp_source));
       setChip(tTemp.status, tempTone('cpu', d.temp_c));
     }
+    cTemp.hidden = d.temp_c == null && !(ctx.state.hist.s['cpu.temp'] || []).some(v => v != null);
     tProc.set(fmt.int(d.processes)); tThreads.set(fmt.int(d.threads)); tHandles.set(fmt.int(d.handles));
     tUp.set(fmt.duration(d.uptime_s));
 
@@ -347,6 +349,7 @@ function cpu(ctx) {
 
     const H = ctx.state.hist, w = ctx.win();
     cUtil.chart.setData(H, w); cPower.chart.setData(H, w); cClock.chart.setData(H, w);
+    if (!cTemp.hidden) cTemp.chart.setData(H, w);
   }
   return { el, update, title: 'Processor', sub: shortCpu(c.name), range: true };
 }
@@ -638,13 +641,19 @@ function sensors(ctx) {
   }
   function update(s) {
     if (!timer) { load(); timer = setInterval(load, 2000); }
-    const key = (s.cpu.temp_source || '') + s.bridge.connected;
+    const hs = s.helper || { state: 'off' };
+    const key = [s.cpu.temp_source || '', s.bridge.connected, s.bridge.source || '', hs.state, hs.sensors || 0].join('|');
     if (cpuTempSrc.dataset.key !== key) {
       cpuTempSrc.dataset.key = key;
-      const has = s.cpu.temp_c != null;
+      const has = s.bridge.connected || s.cpu.temp_c != null;
+      const detail = hs.state === 'on' ? 'Read by the RigWatch sensor helper from the processor and the motherboard (LibreHardwareMonitor’s sensor engine, PawnIO driver).'
+        : s.bridge.connected ? `Provided by ${s.bridge.source}.`
+        : s.cpu.temp_c != null ? `Provided by ${s.cpu.temp_source}.`
+        : hs.state === 'off' ? 'Windows keeps these behind administrator rights. The sensor helper reads them once you turn it on.'
+        : helperSummary(hs);
       cpuTempSrc.replaceChildren(chip(has ? 'good' : 'off', has ? 'Active' : 'Unavailable'),
-        h('div', h('div.source-name', 'CPU core temperature, case fans, voltages'),
-          h('div.muted', has ? `Provided by ${s.cpu.temp_source}.` : 'Not read by this version: Windows keeps these behind administrator rights, and built-in support is in progress. Readings from a running LibreHardwareMonitor are picked up automatically.')));
+        h('div', h('div.source-name', 'CPU core temperature, case fans, voltages'), h('div.muted', detail),
+          hs.state === 'on' ? null : h('button.linkbtn', { type: 'button', onclick: () => whyNoCpuTemp() }, hs.state === 'off' ? 'Turn it on' : 'Details')));
     }
   }
   function destroy() { clearInterval(timer); timer = null; }
@@ -671,6 +680,7 @@ function settingsPage(ctx) {
   const privacy = h('input', { type: 'checkbox', class: 'switch', 'aria-label': 'Hide identifying details' });
   privacy.checked = !!S().privacy;
   privacy.addEventListener('change', () => ctx.saveSettings({ privacy: privacy.checked }));
+  const sensorHelper = helperSetting();
   const base = location.origin;
   const api = [['/api/snapshot', 'Latest reading of every sensor'], ['/api/static', 'Hardware inventory'], ['/api/history', 'Recent history for the charts'],
     ['/api/sensors', 'Flat sensor list with min / max / average'], ['/api/stream', 'Live updates (server-sent events)'], ['/api/sensors.csv', 'Sensor table as CSV']];
@@ -683,6 +693,8 @@ function settingsPage(ctx) {
       row('Keep on top', 'Keep the RigWatch window above other windows.', onTop),
       row('Taskbar strip', 'While RigWatch is minimised, show live numbers on the taskbar. Click the strip to reopen, drag it to move it, right-click for more.', strip),
       row('Hide identifying details', 'Hide the computer name and network addresses, for screenshots and streaming.', privacy)),
+    card('Sensors', h('p.card-note.lead', 'Windows keeps a few sensors behind administrator rights. A small helper reads them for RigWatch; turning it on asks Windows for permission once.'),
+      sensorHelper),
     card('For developers', h('p.card-note.lead', 'RigWatch serves its readings on this computer only (127.0.0.1). Use them in your own scripts, overlays or dashboards.'),
       h('div.table-wrap', h('table.table', h('tbody', api.map(([p, d]) => h('tr', h('td', h('code', base + p)), h('td.muted', d))))))),
     card('About', h('div.about-banner', { role: 'presentation' }), h('div.about', h('img.about-mark', { src: 'assets/icon.png', alt: '', onerror: e => e.target.remove() }),
@@ -690,7 +702,7 @@ function settingsPage(ctx) {
         h('div.muted', `${st.os.name}${st.os.version ? ' ' + st.os.version : ''} · build ${st.os.build}`),
         h('div.muted', [st.board.manufacturer, st.board.product].filter(Boolean).join(' ') + (st.bios.version ? ` · BIOS ${st.bios.version}` : '')),
         h('div.muted', 'Hardware illustrations rendered in Blender. Backdrop photography generated with cyberninjas.')))));
-  return { el, update() {}, title: 'Settings', sub: '' };
+  return { el, update(s) { sensorHelper.update(s); }, title: 'Settings', sub: '' };
 }
 
 export const pages = { overview, cpu, gpu, memory, storage: storagePage, network, processes, sensors, settings: settingsPage };

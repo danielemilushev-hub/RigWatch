@@ -234,9 +234,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         deadline = time.time() + 15
+        helper_deadline = time.time() + 8     # a sensor helper that was just started needs a few seconds
         while time.time() < deadline:
             snap = collector.snapshot()
-            if snap.get("ready") and snap.get("seq", 0) >= 2:   # second sample has real rates
+            warming = (snap.get("helper") or {}).get("state") == "starting" and time.time() < helper_deadline
+            if snap.get("ready") and snap.get("seq", 0) >= 2 and not warming:   # second sample has real rates
                 break
             time.sleep(0.1)
         print(json.dumps({"static": collector.static(), "snapshot": collector.snapshot()}, indent=2, default=str))

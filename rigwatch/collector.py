@@ -46,6 +46,11 @@ def _round(v, digits=1):
     return None if v is None else round(v, digits)
 
 
+# The Windows shell: desktop, taskbar, Start menu, search, on-screen keyboard. Not "a program in use".
+_SHELL_PROCESSES = {"explorer.exe", "searchhost.exe", "startmenuexperiencehost.exe", "shellexperiencehost.exe",
+                    "textinputhost.exe", "lockapp.exe"}
+
+
 def _app_name(exe: str | None) -> str | None:
     """'Cyberpunk2077.exe' -> 'Cyberpunk2077'."""
     if not exe:
@@ -827,7 +832,9 @@ class Collector:
 
         A browser or a launcher often draws from a child process, so the whole
         family of the foreground window's process counts. While RigWatch itself
-        is in front, the program used before it stays the one being watched.
+        or the Windows shell (desktop, taskbar, Start menu) is in front, the
+        program used before it stays the one being watched: the shell started
+        almost every program, so its "family" would be everything.
         """
         out = {"enabled": self._frames_on, "available": self.frames.available, "reason": None,
                "value": None, "app": None, "apps": []}
@@ -842,7 +849,9 @@ class Collector:
 
         front = frames.foreground_pid()
         if front and not self._in_tree(front, self._own_pid):
-            self._fps_root = front
+            front_name = info[front][2].lower() if front in info else ""
+            if front_name not in _SHELL_PROCESSES:
+                self._fps_root = front
         root = self._fps_root
         if root is not None and info and root not in info:
             root = self._fps_root = None                 # that program has closed

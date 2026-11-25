@@ -100,16 +100,17 @@ with minimum, maximum and average.
   normally is. If Windows refuses on some account, RigWatch says "not available"; it never shows a guess.
 - **Whose frame rate:** the window you are working in, including the processes it started (a browser
   draws from a child process). A dash means that program is not drawing right now. While RigWatch's
-  own window is in front, the program you used before it stays the one being measured.
+  own window, the desktop or the taskbar is in front, the program you used before it stays the one
+  being measured.
 - The number is the count of frames presented in the last second, so it trails by about a second.
 - In **exclusive full screen** nothing can be drawn over a game without injecting into it, so the
   strip is not visible there. In borderless and windowed modes the strip is an always-on-top window
-  and should stay visible; this has not been tried with a game yet.
+  and stays visible over the game (seen with Star Citizen in borderless mode).
 - Turn it off under Settings → Frame rate (FPS). That stops the listening completely.
 
-Checked against a test page that draws on every screen refresh: the page reported 165.0 frames per
-second on a 165 Hz monitor and RigWatch counted 164 to 165. It has not yet been compared with the
-built-in counter of a game.
+Checked two ways. A test page that draws on every screen refresh reported 165.0 frames per second on
+a 165 Hz monitor and RigWatch counted 164 to 165. In Star Citizen (borderless, 90 to 145 FPS) the
+numbers matched a second FPS counter. Other games and exclusive full screen have not been tried.
 
 ### Monitors
 

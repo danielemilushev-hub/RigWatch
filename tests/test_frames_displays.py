@@ -89,6 +89,19 @@ class ForegroundTests(unittest.TestCase):
             fps = c._fps()
         self.assertEqual((fps["value"], fps["app"]), (90.0, "Game"))
 
+    def test_clicking_the_desktop_or_taskbar_keeps_the_program_used_before(self):
+        c = self.make({30: 90.0, 21: 60.0}, front=30)
+        c._fps()
+        with mock.patch.object(frames, "foreground_pid", lambda: 1):          # explorer.exe
+            fps = c._fps()
+        self.assertEqual((fps["value"], fps["app"]), (90.0, "Game"))
+
+    def test_the_shell_is_never_the_program(self):
+        """Explorer started almost everything; its family must not stand in for a program."""
+        fps = self.make({30: 144.0, 21: 60.0}, front=1)._fps()
+        self.assertEqual((fps["value"], fps["app"]), (None, None))
+        self.assertEqual(len(fps["apps"]), 2)                                 # still listed as drawing
+
     def test_rigwatch_itself_is_never_the_program(self):
         fps = self.make({11: 30.0}, front=10)._fps()
         self.assertEqual((fps["value"], fps["app"]), (None, None))

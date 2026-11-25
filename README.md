@@ -119,6 +119,8 @@ available at that resolution, connection (DisplayPort, HDMI, built-in …), size
 HDR is on, Windows' scaling, and the graphics card it is plugged into. HDR is reported separately
 from Windows' automatic wide-colour mode, which is easy to mistake for it.
 
+![Displays](docs/displays.png)
+
 ### Start with Windows
 
 Turn on **Settings → Start with Windows** and RigWatch opens by itself when you sign in. It starts

@@ -15,43 +15,88 @@ and explains why. It never fills the gap with an estimate.
 > **Version 2 is a complete rewrite.** The original single-file tkinter version is kept as
 > [`v1.0`](https://github.com/danielemilushev-hub/RigWatch/tree/v1.0).
 
-## Start it
+## Download and run
 
-**Easiest:** download `RigWatch.exe` from the [latest release](https://github.com/danielemilushev-hub/RigWatch/releases/latest) and
-double-click it. No Python needed.
+RigWatch is one file, `RigWatch.exe`. There is no installer and no Python to install.
 
-**From source:** double-click **`RigWatch.bat`**. The first run creates a private Python environment
-(about a minute, needs Python 3.11+ and an internet connection) and fetches the sensor engine used for
-CPU temperature (about 3 MB); after that it opens straight away.
+1. Download **`RigWatch.exe`** from the [latest release](https://github.com/danielemilushev-hub/RigWatch/releases/latest).
+2. Put it in a folder of its own where it will stay, for example **`C:\Program Files\RigWatch`**.
+   Windows asks for administrator permission to create the folder and to copy the exe into it; click
+   Continue.
+   [Why the folder matters](#why-the-folder-matters).
+3. Double-click it. The exe is not code-signed, so the first time Windows SmartScreen may show
+   "Windows protected your PC": click **More info → Run anyway**. Some antivirus tools are also wary of
+   unsigned single-file apps.
+4. Optional: right-click the exe → **Send to → Desktop (create shortcut)**, or turn on
+   **Settings → Start with Windows**.
+5. Optional, for CPU temperature, fans and voltages: install the free [PawnIO](https://pawnio.eu) driver,
+   then turn on **Settings → Sensors** ([details](#cpu-temperature-case-fans-and-voltages)).
 
-Optional: run `tools\create-shortcut.ps1` to put a RigWatch shortcut on your desktop.
-
-### Standalone RigWatch.exe
-
-`RigWatch.exe` is a single file that runs on Windows 10/11 PCs **without Python installed**. Copy it
-anywhere and double-click it. It needs the Microsoft Edge WebView2 runtime, which is part of
+It runs on 64-bit Windows 10 and 11 and needs the Microsoft Edge WebView2 runtime, which is part of
 Windows 11 and present on almost every up-to-date Windows 10 PC.
 
-Build it yourself (the result lands in `dist\`):
+Using it on another PC is the same steps. Settings are kept per PC, so a new PC starts with the
+defaults.
+
+### Why the folder matters
+
+- The [sensor helper](#cpu-temperature-case-fans-and-voltages) runs with administrator rights from the
+  folder RigWatch is in. In `C:\Program Files` only administrators can change files, so nothing else can
+  use the helper to gain those rights. Downloads, the Desktop and USB sticks do not give that protection.
+- **Start with Windows** points at the exe where it is. A copy on a USB stick only starts if the stick is
+  plugged in when you sign in.
+- If you never turn on the sensor helper, any folder works.
+
+### Update, move or remove
+
+- **Update:** close RigWatch (close its window, or right-click the taskbar strip → Quit RigWatch), then
+  replace `RigWatch.exe` with the new one in the same folder. If the sensor helper is on, wait half a
+  minute first: it closes about 25 seconds after RigWatch, and until then Windows reports the file as in
+  use. Settings, Start with Windows and the sensor helper carry on as before.
+- **Move:** Start with Windows follows the exe the next time you open it from its new place. The sensor
+  helper does not: turn it off and on again under Settings → Sensors.
+- **Remove:** first turn off **Settings → Sensors** and **Settings → Start with Windows** (this removes the
+  scheduled task and the start-up entry), close RigWatch, then delete the exe and the
+  `%APPDATA%\RigWatch` folder. PawnIO, if you installed it only for RigWatch, has its own uninstaller in
+  `C:\Program Files\PawnIO`.
+
+### What it keeps on the PC
+
+| What | Where | When |
+|---|---|---|
+| Settings, window data, and `rigwatch.log` if it ever fails to start | `%APPDATA%\RigWatch` | Always |
+| Start-up entry | Your account's start-up list (Task Manager → Startup apps) | Only while Start with Windows is on |
+| Scheduled task "RigWatch Sensor Helper" | Task Scheduler | Only while the sensor helper is on |
+
+Nothing else: no service, no driver of its own, no files next to the exe. While it runs, the exe
+unpacks itself into a temporary folder that is removed again when it closes.
+
+### Run from source
+
+Double-click **`RigWatch.bat`**. The first run creates a private Python environment (about a minute,
+needs Python 3.11+ and an internet connection) and fetches the sensor engine used for CPU temperature
+(about 3 MB); after that it opens straight away. Optional: run `tools\create-shortcut.ps1` to put a
+RigWatch shortcut on your desktop.
+
+Build the standalone exe yourself (the result lands in `dist\`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\build-exe.ps1
 ```
 
-The exe is not code-signed, so on another PC Windows SmartScreen may show "Windows protected your PC"
-the first time (More info → Run anyway), and some antivirus tools are suspicious of unsigned
-single-file apps. Signing it with a code-signing certificate removes both.
+### Command line
 
-The command-line flags below work with the exe too (`RigWatch.exe --json`, `RigWatch.exe --server`, …).
-
-From a terminal:
+The same flags work with the exe (`RigWatch.exe --json`) and from source:
 
 ```powershell
-.\.venv\Scripts\python.exe -m rigwatch            # the app window
-.\.venv\Scripts\python.exe -m rigwatch --browser  # open in your browser instead
-.\.venv\Scripts\python.exe -m rigwatch --server   # only the local service (http://127.0.0.1:47115)
-.\.venv\Scripts\python.exe -m rigwatch --json     # print one reading as JSON and exit
-.\.venv\Scripts\python.exe -m rigwatch --minimized  # start minimised, showing only the taskbar strip
+.\.venv\Scripts\python.exe -m rigwatch               # the app window
+.\.venv\Scripts\python.exe -m rigwatch --browser     # open in your browser instead
+.\.venv\Scripts\python.exe -m rigwatch --server      # only the local service (http://127.0.0.1:47115)
+.\.venv\Scripts\python.exe -m rigwatch --json        # print one reading as JSON and exit
+.\.venv\Scripts\python.exe -m rigwatch --minimized   # start minimised, showing only the taskbar strip
+.\.venv\Scripts\python.exe -m rigwatch --port 47200  # use another local port
+.\.venv\Scripts\python.exe -m rigwatch --interval 2  # seconds between readings, for this run
+.\.venv\Scripts\python.exe -m rigwatch --version     # print the version
 ```
 
 ## What you get
@@ -68,10 +113,25 @@ From a terminal:
 | All sensors | Every reading with min / max / average, CSV export, and where each number comes from |
 | Mini | Compact always-on-top panel for gaming or working full-screen |
 
-Dark and light themes, °C or °F, refresh rate from twice a second to every 5 seconds, and a switch
-that hides the computer name and network addresses for screenshots and streaming.
+Dark and light themes, °C or °F, refresh rate from twice a second to every 5 seconds, keep the window
+on top, and a switch that hides the computer name and network addresses for screenshots and streaming.
 
 ![Graphics page](docs/graphics.png)
+
+### Health verdict
+
+The banner on the Overview says "Everything looks normal" until one of these is true:
+
+| Component | Warning | Critical |
+|---|---|---|
+| Processor | 85 °C | 95 °C |
+| Graphics card | 85 °C, or hotspot 98 °C; video memory 97 % full | 95 °C, or hotspot 108 °C |
+| Memory | 88 % in use | 95 % in use |
+| Drive | The drive's own warning temperature (70 °C if it reports none); 30 % of rated life left; any media errors | The drive's own critical temperature (80 °C if none); 10 % of rated life left; the drive reports a health warning |
+| Volume | Less than 5 % free | |
+| Battery | 10 % and not plugged in | |
+
+A reading that is not available never raises a warning.
 
 ### Minimised: numbers on the taskbar
 
@@ -209,6 +269,8 @@ The service listens on this computer only (`127.0.0.1:47115`; a free port is use
 | `GET /api/sensors.csv`, `/api/history.csv` | CSV exports |
 | `GET /api/helper` | State of the sensor helper (off, starting, on, driver missing, …) |
 | `GET /api/startup` | Whether RigWatch starts with Windows (`on`, `off`, or `blocked` in Task Manager) |
+| `GET /api/settings` | Current settings |
+| `GET /api/ping` | `{"app": "rigwatch", "version": …}`, to check that RigWatch is running |
 
 Layout:
 
